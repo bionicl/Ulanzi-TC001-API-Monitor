@@ -7,6 +7,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <math.h>
 
 // Project Details
 String buildNumber = "v1.1.1";
@@ -81,6 +82,19 @@ int activeScreen = 0;
 bool autoRotate = false;
 int rotateInterval = 10; // seconds between auto-rotation
 unsigned long lastRotateTime = 0;
+bool screenTransitionAnim = false;
+
+// Screen transition animation state
+bool transitionActive = false;
+int transitionFrom = 0;
+int transitionTo = 0;
+int8_t transitionDir = 1; // +1 = next (old exits left), -1 = prev (old exits right)
+unsigned long transitionStartMs = 0;
+const unsigned long TRANSITION_DURATION_MS = 1000;
+const int TRANSITION_FRAME_MS = 16;
+
+void updateScreenTransition();
+void scrollCurrentValue();
 
 // Brightness configuration
 bool autoBrightness = false; // false = manual, true = auto (light sensor)
@@ -299,9 +313,12 @@ void loop() {
   }
 
   // Continuously scroll the current value or battery info
-  if (millis() - lastScrollUpdate > scrollDelay) {
+  unsigned long displayInterval = transitionActive ? TRANSITION_FRAME_MS : scrollDelay;
+  if (millis() - lastScrollUpdate > displayInterval) {
     if (showBatteryRequested) {
       scrollBatteryDisplay();
+    } else if (transitionActive) {
+      updateScreenTransition();
     } else {
       scrollCurrentValue();
     }
@@ -452,6 +469,7 @@ void loadConfiguration() {
   adminPassword = preferences.getString("adminPassword", "ulanzitc001");
   autoRotate = preferences.getBool("autoRotate", false);
   rotateInterval = preferences.getInt("rotateIntv", 10);
+  screenTransitionAnim = preferences.getBool("scrTransAnim", false);
   numScreens = preferences.getInt("numScreens", 0);
   activeScreen = preferences.getInt("activeScr", 0);
 
@@ -582,6 +600,7 @@ void saveAllConfiguration() {
   preferences.putString("adminPassword", adminPassword);
   preferences.putBool("autoRotate", autoRotate);
   preferences.putInt("rotateIntv", rotateInterval);
+  preferences.putBool("scrTransAnim", screenTransitionAnim);
   preferences.putInt("numScreens", numScreens);
   preferences.putInt("activeScr", activeScreen);
 
@@ -726,7 +745,7 @@ void checkButtons() {
       Serial.println("Button released after " + String(holdTime) + "ms");
 
       // Short press actions (only if no long press action was executed)
-      if (!comboActionExecuted) {
+      if (!comboActionExecuted && !transitionActive) {
         if (currentCombo == COMBO_BTN1 && holdTime < 500) {
           Serial.println("Short press Button 1 - previous screen");
           prevScreen();
@@ -798,34 +817,72 @@ void configModeCallback(WiFiManager *myWiFiManager) {
 // Screen Navigation Functions
 // ============================================
 
+void saveActiveScreenPref() {
+  preferences.begin("tc001", false);
+  preferences.putInt("activeScr", activeScreen);
+  preferences.end();
+}
+
+void beginScreenTransition(int fromIdx, int toIdx, int8_t dir) {
+  transitionFrom = fromIdx;
+  transitionTo = toIdx;
+  transitionDir = dir;
+  transitionStartMs = millis();
+  transitionActive = true;
+}
+
 void nextScreen() {
-  if (numScreens <= 1) return;
-  activeScreen = (activeScreen + 1) % numScreens;
-  onScreenSwitch();
+  if (numScreens <= 1 || transitionActive) return;
+  int from = activeScreen;
+  int to = (from + 1) % numScreens;
+  if (screenTransitionAnim) {
+    beginScreenTransition(from, to, 1);
+    activeScreen = to;
+    saveActiveScreenPref();
+    lastRotateTime = millis();
+    Serial.println("Switched to screen " + String(activeScreen) + ": " + screens[activeScreen].name);
+  } else {
+    activeScreen = to;
+    onScreenSwitch();
+  }
 }
 
 void prevScreen() {
-  if (numScreens <= 1) return;
-  activeScreen = (activeScreen - 1 + numScreens) % numScreens;
-  onScreenSwitch();
+  if (numScreens <= 1 || transitionActive) return;
+  int from = activeScreen;
+  int to = (from - 1 + numScreens) % numScreens;
+  if (screenTransitionAnim) {
+    beginScreenTransition(from, to, -1);
+    activeScreen = to;
+    saveActiveScreenPref();
+    lastRotateTime = millis();
+    Serial.println("Switched to screen " + String(activeScreen) + ": " + screens[activeScreen].name);
+  } else {
+    activeScreen = to;
+    onScreenSwitch();
+  }
 }
 
 void switchToScreen(int index) {
   if (index < 0 || index >= numScreens) return;
-  if (index == activeScreen) return;
-  activeScreen = index;
-  onScreenSwitch();
+  if (index == activeScreen || transitionActive) return;
+  int from = activeScreen;
+  if (screenTransitionAnim) {
+    beginScreenTransition(from, index, 1);
+    activeScreen = index;
+    saveActiveScreenPref();
+    lastRotateTime = millis();
+    Serial.println("Switched to screen " + String(activeScreen) + ": " + screens[activeScreen].name);
+  } else {
+    activeScreen = index;
+    onScreenSwitch();
+  }
 }
 
 void onScreenSwitch() {
   scrollX = MATRIX_WIDTH;
   lastRotateTime = millis(); // Reset auto-rotate timer
-
-  // Save active screen preference
-  preferences.begin("tc001", false);
-  preferences.putInt("activeScr", activeScreen);
-  preferences.end();
-
+  saveActiveScreenPref();
   Serial.println("Switched to screen " + String(activeScreen) + ": " + screens[activeScreen].name);
 }
 
@@ -1025,6 +1082,77 @@ String extractJSONValue(const String& json, const String& path) {
   return "";
 }
 
+float easeOutExpo(float t) {
+  if (t >= 1.0f) return 1.0f;
+  return 1.0f - powf(2.0f, -10.0f * t);
+}
+
+uint16_t getScreenTextColor(int screenIndex) {
+  if (screenIndex < 0 || screenIndex >= numScreens) {
+    return matrix.Color(0, 255, 0);
+  }
+  Screen& scr = screens[screenIndex];
+  if (scr.lastError.length() > 0) {
+    return matrix.Color(255, 0, 0);
+  }
+  return matrix.Color(0, 255, 0);
+}
+
+void drawScreenAt(int screenIndex, int16_t offsetX) {
+  if (screenIndex < 0 || screenIndex >= numScreens) return;
+
+  Screen& scr = screens[screenIndex];
+  matrix.setTextColor(getScreenTextColor(screenIndex));
+
+  int displayWidth = scr.iconEnabled ? TEXT_WIDTH : MATRIX_WIDTH;
+  int xOffset = scr.iconEnabled ? ICON_WIDTH : 0;
+
+  if (scr.iconEnabled) {
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < ICON_WIDTH; x++) {
+        int px = offsetX + x;
+        if (px >= 0 && px < MATRIX_WIDTH) {
+          matrix.drawPixel(px, y, scr.iconPixels[y * 8 + x]);
+        }
+      }
+    }
+  }
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  matrix.getTextBounds(scr.currentValue.c_str(), 0, 0, &x1, &y1, &w, &h);
+
+  int16_t centerX = offsetX + xOffset + (displayWidth - w) / 2;
+  if (centerX < offsetX + xOffset) centerX = offsetX + xOffset;
+
+  matrix.setCursor(centerX, 0);
+  matrix.print(scr.currentValue);
+}
+
+void updateScreenTransition() {
+  float t = (millis() - transitionStartMs) / (float)TRANSITION_DURATION_MS;
+  if (t > 1.0f) t = 1.0f;
+  float p = easeOutExpo(t);
+  int shift = (int)(MATRIX_WIDTH * p);
+
+  matrix.fillScreen(0);
+
+  if (transitionDir > 0) {
+    drawScreenAt(transitionFrom, -shift);
+    drawScreenAt(transitionTo, MATRIX_WIDTH - shift);
+  } else {
+    drawScreenAt(transitionFrom, shift);
+    drawScreenAt(transitionTo, -MATRIX_WIDTH + shift);
+  }
+
+  matrix.show();
+
+  if (t >= 1.0f) {
+    transitionActive = false;
+    scrollX = MATRIX_WIDTH;
+  }
+}
+
 void scrollCurrentValue() {
   matrix.fillScreen(0);
 
@@ -1054,14 +1182,7 @@ void scrollCurrentValue() {
   }
 
   Screen& scr = screens[activeScreen];
-
-  uint16_t color;
-  if (scr.lastError.length() > 0) {
-    color = matrix.Color(255, 0, 0);
-  } else {
-    color = matrix.Color(0, 255, 0);
-  }
-  matrix.setTextColor(color);
+  matrix.setTextColor(getScreenTextColor(activeScreen));
 
   if (scr.scrollEnabled) {
     int iconOffset = scr.iconEnabled ? (ICON_WIDTH + 1) : 0;
@@ -1086,26 +1207,7 @@ void scrollCurrentValue() {
       scrollX = MATRIX_WIDTH;
     }
   } else {
-    int displayWidth = scr.iconEnabled ? TEXT_WIDTH : MATRIX_WIDTH;
-    int xOffset = scr.iconEnabled ? ICON_WIDTH : 0;
-
-    if (scr.iconEnabled) {
-      for (int y = 0; y < 8; y++) {
-        for (int x = 0; x < 8; x++) {
-          matrix.drawPixel(x, y, scr.iconPixels[y * 8 + x]);
-        }
-      }
-    }
-
-    int16_t x1, y1;
-    uint16_t w, h;
-    matrix.getTextBounds(scr.currentValue.c_str(), 0, 0, &x1, &y1, &w, &h);
-
-    int16_t centerX = xOffset + (displayWidth - w) / 2;
-    if (centerX < xOffset) centerX = xOffset;
-
-    matrix.setCursor(centerX, 0);
-    matrix.print(scr.currentValue);
+    drawScreenAt(activeScreen, 0);
     matrix.show();
   }
 }
@@ -1436,6 +1538,7 @@ void handleBackupDownload() {
   doc["manual_brightness"] = manualBrightness;
   doc["auto_rotate"] = autoRotate;
   doc["rotate_interval"] = rotateInterval;
+  doc["screen_transition_anim"] = screenTransitionAnim;
 
   // Screens array (excluding API keys for security)
   JsonArray screensArr = doc.createNestedArray("screens");
@@ -1477,6 +1580,7 @@ void handleBackupRestore() {
   if (doc.containsKey("manual_brightness")) manualBrightness = doc["manual_brightness"];
   if (doc.containsKey("auto_rotate")) autoRotate = doc["auto_rotate"];
   if (doc.containsKey("rotate_interval")) rotateInterval = doc["rotate_interval"];
+  if (doc.containsKey("screen_transition_anim")) screenTransitionAnim = doc["screen_transition_anim"];
 
   // Check for new multi-screen format
   if (doc.containsKey("screens")) {
@@ -1606,6 +1710,7 @@ void handleRoot() {
       }
       html += "</div>";
       html += "<div class='info-row'><span class='label'>Auto-Rotate:</span><span class='value'>" + String(autoRotate ? "Every " + String(rotateInterval) + "s" : "Off") + "</span></div>";
+      html += "<div class='info-row'><span class='label'>Screen Transition:</span><span class='value'>" + String(screenTransitionAnim ? "On (1s slide)" : "Off") + "</span></div>";
     }
   }
 
@@ -1670,6 +1775,10 @@ void handleGeneralConfig() {
   html += "<input type='number' name='rotateInterval' value='" + String(rotateInterval) + "' min='3' max='300'>";
   html += "<p class='help'>How often to switch screens (3-300 seconds)</p>";
   html += "</div>";
+
+  html += "<h2 style='margin-top: 30px;'>Screen Transitions</h2>";
+  html += "<label><input type='checkbox' name='screenTransitionAnim' " + String(screenTransitionAnim ? "checked" : "") + "><span class='checkbox-label'>Animate Screen Changes</span></label>";
+  html += "<p class='help'>1 second horizontal slide with ease-out when switching screens. Button 3: slide right; Button 1: slide left. Auto-rotate and Set Active always slide forward.</p>";
 
   // Admin password section
   html += "<h2 style='margin-top: 30px;'>Admin Password</h2>";
@@ -1753,6 +1862,10 @@ void handleSaveGeneralConfig() {
     Serial.println(rotateInterval);
   }
 
+  screenTransitionAnim = server.hasArg("screenTransitionAnim");
+  Serial.print("Screen Transition Anim: ");
+  Serial.println(screenTransitionAnim ? "ENABLED" : "DISABLED");
+
   // Check if admin password should be changed
   if (server.hasArg("adminPassword")) {
     String newPassword = server.arg("adminPassword");
@@ -1770,6 +1883,7 @@ void handleSaveGeneralConfig() {
   preferences.putString("adminPassword", adminPassword);
   preferences.putBool("autoRotate", autoRotate);
   preferences.putInt("rotateIntv", rotateInterval);
+  preferences.putBool("scrTransAnim", screenTransitionAnim);
   preferences.end();
   Serial.println("Preferences written successfully");
   
@@ -2338,6 +2452,7 @@ void handleStatus() {
   doc["active_screen"] = activeScreen;
   doc["auto_rotate"] = autoRotate;
   doc["rotate_interval"] = rotateInterval;
+  doc["screen_transition_anim"] = screenTransitionAnim;
 
   JsonArray screensArr = doc.createNestedArray("screens");
   for (int i = 0; i < numScreens; i++) {
