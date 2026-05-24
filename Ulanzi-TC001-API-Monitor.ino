@@ -1232,6 +1232,12 @@ uint16_t getScreenTextColor(int screenIndex) {
   if (scr.lastError.length() > 0) {
     return matrix.Color(255, 0, 0);
   }
+  if (scr.textColorMode == "static") {
+    return matrix.Color(scr.textColorR, scr.textColorG, scr.textColorB);
+  }
+  if (scr.textColorMode == "api") {
+    return scr.currentTextColor;
+  }
   return matrix.Color(0, 255, 0);
 }
 
@@ -1259,10 +1265,13 @@ void drawScreenAt(int screenIndex, int16_t offsetX) {
   uint16_t w, h;
   matrix.getTextBounds(scr.currentValue.c_str(), 0, 0, &x1, &y1, &w, &h);
 
-  int16_t centerX = offsetX + xOffset + (displayWidth - w) / 2;
-  if (centerX < offsetX + xOffset) centerX = offsetX + xOffset;
+  String align = scr.textAlign;
+  if (align != "left" && align != "center" && align != "right") {
+    align = "center";
+  }
+  int16_t textX = offsetX + staticTextXForAlign(align, xOffset, displayWidth, w);
 
-  matrix.setCursor(centerX, 0);
+  matrix.setCursor(textX, 0);
   matrix.print(scr.currentValue);
 }
 
