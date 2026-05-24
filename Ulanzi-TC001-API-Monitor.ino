@@ -745,7 +745,7 @@ void checkButtons() {
       Serial.println("Button released after " + String(holdTime) + "ms");
 
       // Short press actions (only if no long press action was executed)
-      if (!comboActionExecuted && !transitionActive) {
+      if (!comboActionExecuted) {
         if (currentCombo == COMBO_BTN1 && holdTime < 500) {
           Serial.println("Short press Button 1 - previous screen");
           prevScreen();
@@ -831,15 +831,21 @@ void beginScreenTransition(int fromIdx, int toIdx, int8_t dir) {
   transitionActive = true;
 }
 
+void startAnimatedScreenChange(int to, int8_t dir) {
+  int from = transitionActive ? transitionTo : activeScreen;
+  if (from == to) return;
+  beginScreenTransition(from, to, dir);
+  activeScreen = to;
+  saveActiveScreenPref();
+  lastRotateTime = millis();
+}
+
 void nextScreen() {
-  if (numScreens <= 1 || transitionActive) return;
-  int from = activeScreen;
-  int to = (from + 1) % numScreens;
+  if (numScreens <= 1) return;
+  int base = transitionActive ? transitionTo : activeScreen;
+  int to = (base + 1) % numScreens;
   if (screenTransitionAnim) {
-    beginScreenTransition(from, to, 1);
-    activeScreen = to;
-    saveActiveScreenPref();
-    lastRotateTime = millis();
+    startAnimatedScreenChange(to, 1);
     Serial.println("Switched to screen " + String(activeScreen) + ": " + screens[activeScreen].name);
   } else {
     activeScreen = to;
@@ -848,14 +854,11 @@ void nextScreen() {
 }
 
 void prevScreen() {
-  if (numScreens <= 1 || transitionActive) return;
-  int from = activeScreen;
-  int to = (from - 1 + numScreens) % numScreens;
+  if (numScreens <= 1) return;
+  int base = transitionActive ? transitionTo : activeScreen;
+  int to = (base - 1 + numScreens) % numScreens;
   if (screenTransitionAnim) {
-    beginScreenTransition(from, to, -1);
-    activeScreen = to;
-    saveActiveScreenPref();
-    lastRotateTime = millis();
+    startAnimatedScreenChange(to, -1);
     Serial.println("Switched to screen " + String(activeScreen) + ": " + screens[activeScreen].name);
   } else {
     activeScreen = to;
@@ -865,13 +868,10 @@ void prevScreen() {
 
 void switchToScreen(int index) {
   if (index < 0 || index >= numScreens) return;
-  if (index == activeScreen || transitionActive) return;
-  int from = activeScreen;
+  if (!transitionActive && index == activeScreen) return;
+  if (transitionActive && index == transitionTo) return;
   if (screenTransitionAnim) {
-    beginScreenTransition(from, index, 1);
-    activeScreen = index;
-    saveActiveScreenPref();
-    lastRotateTime = millis();
+    startAnimatedScreenChange(index, 1);
     Serial.println("Switched to screen " + String(activeScreen) + ": " + screens[activeScreen].name);
   } else {
     activeScreen = index;
@@ -1082,9 +1082,10 @@ String extractJSONValue(const String& json, const String& path) {
   return "";
 }
 
-float easeOutExpo(float t) {
+float easeOutQuart(float t) {
   if (t >= 1.0f) return 1.0f;
-  return 1.0f - powf(2.0f, -10.0f * t);
+  float inv = 1.0f - t;
+  return 1.0f - inv * inv * inv * inv;
 }
 
 uint16_t getScreenTextColor(int screenIndex) {
@@ -1132,7 +1133,7 @@ void drawScreenAt(int screenIndex, int16_t offsetX) {
 void updateScreenTransition() {
   float t = (millis() - transitionStartMs) / (float)TRANSITION_DURATION_MS;
   if (t > 1.0f) t = 1.0f;
-  float p = easeOutExpo(t);
+  float p = easeOutQuart(t);
   int shift = (int)(MATRIX_WIDTH * p);
 
   matrix.fillScreen(0);
@@ -1778,7 +1779,7 @@ void handleGeneralConfig() {
 
   html += "<h2 style='margin-top: 30px;'>Screen Transitions</h2>";
   html += "<label><input type='checkbox' name='screenTransitionAnim' " + String(screenTransitionAnim ? "checked" : "") + "><span class='checkbox-label'>Animate Screen Changes</span></label>";
-  html += "<p class='help'>1 second horizontal slide with ease-out when switching screens. Button 3: slide right; Button 1: slide left. Auto-rotate and Set Active always slide forward.</p>";
+  html += "<p class='help'>1 second horizontal slide (ease-out-quart) when switching screens. Button 3: slide right; Button 1: slide left. Buttons work during animation to skip quickly. Auto-rotate and Set Active always slide forward.</p>";
 
   // Admin password section
   html += "<h2 style='margin-top: 30px;'>Admin Password</h2>";
