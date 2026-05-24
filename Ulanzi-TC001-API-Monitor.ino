@@ -100,7 +100,6 @@ bool autoRotate = false;
 int rotateInterval = 10; // seconds between auto-rotation
 unsigned long lastRotateTime = 0;
 bool screenTransitionAnim = false;
-bool timeConfigured = false;
 bool timeSynced = false;
 unsigned long lastNtpSyncMs = 0;
 
@@ -124,7 +123,7 @@ bool navigateJsonPath(JsonVariant root, const String& path, JsonVariant& out);
 void initScreenColorBarState(Screen& scr);
 bool updateScreenColorBar(Screen& scr, const String& jsonPayload);
 void drawColorBar(const Screen& scr, int16_t offsetX);
-void ensureTimeConfigured();
+void applyPolandTimezone();
 void syncDeviceTime();
 int getLocalHourSlot();
 uint16_t blendColorTowardWhite(uint16_t color, float amount);
@@ -1274,27 +1273,41 @@ uint16_t colorBarGrayPixel() {
   return matrix.Color(48, 48, 48);
 }
 
-void ensureTimeConfigured() {
-  if (timeConfigured) return;
+void applyPolandTimezone() {
+  // Must run after configTime() — ESP32 configTime(0,0) overwrites TZ with UTC otherwise.
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
   tzset();
-  timeConfigured = true;
 }
 
 void syncDeviceTime() {
   if (WiFi.status() != WL_CONNECTED) return;
-  ensureTimeConfigured();
+
   configTime(0, 0, "pool.ntp.org", "time.google.com");
+
   struct tm timeinfo;
-  timeSynced = getLocalTime(&timeinfo, 15000);
-  if (timeSynced) {
-    char timeBuf[32];
-    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-    Serial.print("NTP time synced: ");
-    Serial.println(timeBuf);
-  } else {
-    Serial.println("NTP time sync failed");
+  if (!getLocalTime(&timeinfo, 15000)) {
+    timeSynced = false;
+    Serial.println("NTP time sync failed (no response)");
+    return;
   }
+
+  applyPolandTimezone();
+
+  if (!getLocalTime(&timeinfo, 5000)) {
+    timeSynced = false;
+    Serial.println("NTP time sync failed (local time after TZ)");
+    return;
+  }
+
+  timeSynced = true;
+  char timeBuf[32];
+  strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  Serial.print("NTP time synced (local): ");
+  Serial.print(timeBuf);
+  Serial.print(" hour=");
+  Serial.print(timeinfo.tm_hour);
+  Serial.print(" DST=");
+  Serial.println(timeinfo.tm_isdst);
 }
 
 int getLocalHourSlot() {

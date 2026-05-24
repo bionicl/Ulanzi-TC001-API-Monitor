@@ -40,7 +40,7 @@ AWTRIX requires an external server to POST data to the device. This firmware pol
 
 ## What's New in v1.1.5
 
-- **Current-hour pulse on color bar** - When a screen has a 24-slot color bar enabled, the segment for the current local hour (0–23, slot 0 = midnight) slowly pulses toward white using a sine wave (~3.5 s period). Requires WiFi and NTP sync (Europe/Warsaw timezone by default).
+- **Current-hour pulse on color bar** - When a screen has a 24-slot color bar enabled, the segment for the current local hour (0–23, slot 0 = midnight) slowly pulses toward white using a sine wave (~3.5 s period). Requires WiFi and NTP sync (Europe/Warsaw: `CET-1CEST`, applied after `configTime` so DST/CEST is correct).
 
 ## What's New in v1.1.4
 
