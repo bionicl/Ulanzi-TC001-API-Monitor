@@ -8,9 +8,10 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
+#include "TomThumb.h"
 
 // Project Details
-String buildNumber = "v1.1.1";
+String buildNumber = "v1.1.2";
 
 // Pin definitions
 #define BUTTON_1 26
@@ -89,6 +90,7 @@ bool autoRotate = false;
 int rotateInterval = 10; // seconds between auto-rotation
 unsigned long lastRotateTime = 0;
 bool screenTransitionAnim = false;
+uint8_t textHeightMode = 7; // 7 = standard GFX, 5 = compact TomThumb 3x5
 
 // Screen transition animation state
 bool transitionActive = false;
@@ -101,6 +103,9 @@ const int TRANSITION_FRAME_MS = 16;
 
 void updateScreenTransition();
 void scrollCurrentValue();
+void prepareMatrixText();
+int16_t matrixTextBaselineY();
+uint16_t measureTextWidth(const String& text);
 
 // Brightness configuration
 bool autoBrightness = false; // false = manual, true = auto (light sensor)
@@ -427,12 +432,14 @@ void scrollBatteryDisplay() {
   
   matrix.fillScreen(0);
   matrix.setTextColor(color);
+  prepareMatrixText();
+  int16_t textY = matrixTextBaselineY();
   
   String align = (numScreens > 0) ? screens[activeScreen].textAlign : "scroll";
   if (align == "scroll") {
-    int16_t textWidth = batteryText.length() * 6;
+    int16_t textWidth = measureTextWidth(batteryText);
 
-    matrix.setCursor(scrollX, 0);
+    matrix.setCursor(scrollX, textY);
     matrix.print(batteryText);
     matrix.show();
 
@@ -443,7 +450,7 @@ void scrollBatteryDisplay() {
   } else {
     int16_t x1, y1;
     uint16_t w, h;
-    matrix.getTextBounds(batteryText.c_str(), 0, 0, &x1, &y1, &w, &h);
+    matrix.getTextBounds(batteryText.c_str(), 0, textY, &x1, &y1, &w, &h);
     int16_t textX;
     if (align == "left") {
       textX = 0;
@@ -455,7 +462,7 @@ void scrollBatteryDisplay() {
       if (textX < 0) textX = 0;
     }
 
-    matrix.setCursor(textX, 0);
+    matrix.setCursor(textX, textY);
     matrix.print(batteryText);
     matrix.show();
   }
@@ -483,6 +490,8 @@ void loadConfiguration() {
   autoRotate = preferences.getBool("autoRotate", false);
   rotateInterval = preferences.getInt("rotateIntv", 10);
   screenTransitionAnim = preferences.getBool("scrTransAnim", false);
+  textHeightMode = preferences.getInt("txtHeight", 7);
+  if (textHeightMode != 5 && textHeightMode != 7) textHeightMode = 7;
   numScreens = preferences.getInt("numScreens", 0);
   activeScreen = preferences.getInt("activeScr", 0);
 
@@ -648,6 +657,7 @@ void saveAllConfiguration() {
   preferences.putBool("autoRotate", autoRotate);
   preferences.putInt("rotateIntv", rotateInterval);
   preferences.putBool("scrTransAnim", screenTransitionAnim);
+  preferences.putInt("txtHeight", textHeightMode);
   preferences.putInt("numScreens", numScreens);
   preferences.putInt("activeScr", activeScreen);
 
@@ -1205,6 +1215,28 @@ String textAlignFromBackup(JsonVariantConst textAlignKey, JsonVariantConst scrol
   return oldScroll ? "scroll" : "center";
 }
 
+void prepareMatrixText() {
+  if (textHeightMode == 5) {
+    matrix.setFont(&TomThumb);
+  } else {
+    matrix.setFont();
+  }
+}
+
+int16_t matrixTextBaselineY() {
+  // TomThumb glyphs use yOffset -5 (5px tall). Cursor Y is the baseline:
+  // pixels land at y..y+4 with yo=-5, so Y=6 → rows 1-5 (1px top margin on 8px matrix).
+  return (textHeightMode == 5) ? 6 : 0;
+}
+
+uint16_t measureTextWidth(const String& text) {
+  prepareMatrixText();
+  int16_t x1, y1;
+  uint16_t w, h;
+  matrix.getTextBounds(text.c_str(), 0, matrixTextBaselineY(), &x1, &y1, &w, &h);
+  return w;
+}
+
 int16_t staticTextXForAlign(const String& textAlign, int xOffset, int displayWidth, uint16_t w) {
   int16_t textX;
   if (textAlign == "left") {
@@ -1247,6 +1279,8 @@ void drawScreenAt(int screenIndex, int16_t offsetX) {
 
   Screen& scr = screens[screenIndex];
   matrix.setTextColor(getScreenTextColor(screenIndex));
+  prepareMatrixText();
+  int16_t textY = matrixTextBaselineY();
 
   int displayWidth = scr.iconEnabled ? TEXT_WIDTH : MATRIX_WIDTH;
   int xOffset = scr.iconEnabled ? ICON_WIDTH : 0;
@@ -1264,7 +1298,7 @@ void drawScreenAt(int screenIndex, int16_t offsetX) {
 
   int16_t x1, y1;
   uint16_t w, h;
-  matrix.getTextBounds(scr.currentValue.c_str(), 0, 0, &x1, &y1, &w, &h);
+  matrix.getTextBounds(scr.currentValue.c_str(), 0, textY, &x1, &y1, &w, &h);
 
   String align = scr.textAlign;
   if (align != "left" && align != "center" && align != "right") {
@@ -1272,7 +1306,7 @@ void drawScreenAt(int screenIndex, int16_t offsetX) {
   }
   int16_t textX = offsetX + staticTextXForAlign(align, xOffset, displayWidth, w);
 
-  matrix.setCursor(textX, 0);
+  matrix.setCursor(textX, textY);
   matrix.print(scr.currentValue);
 }
 
@@ -1305,8 +1339,10 @@ void scrollCurrentValue() {
   // Handle config mode
   if (inConfigMode) {
     matrix.setTextColor(matrix.Color(255, 165, 0));
-    int16_t textWidth = configModeMessage.length() * 6;
-    matrix.setCursor(scrollX, 0);
+    prepareMatrixText();
+    int16_t textY = matrixTextBaselineY();
+    int16_t textWidth = measureTextWidth(configModeMessage);
+    matrix.setCursor(scrollX, textY);
     matrix.print(configModeMessage);
     matrix.show();
     scrollX--;
@@ -1317,11 +1353,13 @@ void scrollCurrentValue() {
   // No screens configured
   if (numScreens == 0) {
     matrix.setTextColor(matrix.Color(255, 165, 0));
+    prepareMatrixText();
+    int16_t textY = matrixTextBaselineY();
     String msg = "NO API";
     int16_t x1, y1;
     uint16_t w, h;
-    matrix.getTextBounds(msg.c_str(), 0, 0, &x1, &y1, &w, &h);
-    matrix.setCursor((MATRIX_WIDTH - w) / 2, 0);
+    matrix.getTextBounds(msg.c_str(), 0, textY, &x1, &y1, &w, &h);
+    matrix.setCursor((MATRIX_WIDTH - w) / 2, textY);
     matrix.print(msg);
     matrix.show();
     return;
@@ -1331,8 +1369,10 @@ void scrollCurrentValue() {
   matrix.setTextColor(getScreenTextColor(activeScreen));
 
   if (scr.textAlign == "scroll") {
+    prepareMatrixText();
+    int16_t textY = matrixTextBaselineY();
     int iconOffset = scr.iconEnabled ? (ICON_WIDTH + 1) : 0;
-    int16_t textWidth = scr.currentValue.length() * 6;
+    int16_t textWidth = measureTextWidth(scr.currentValue);
 
     if (scr.iconEnabled && scrollX < ICON_WIDTH) {
       for (int y = 0; y < 8; y++) {
@@ -1344,7 +1384,7 @@ void scrollCurrentValue() {
       }
     }
 
-    matrix.setCursor(scrollX + iconOffset, 0);
+    matrix.setCursor(scrollX + iconOffset, textY);
     matrix.print(scr.currentValue);
     matrix.show();
 
@@ -1685,6 +1725,7 @@ void handleBackupDownload() {
   doc["auto_rotate"] = autoRotate;
   doc["rotate_interval"] = rotateInterval;
   doc["screen_transition_anim"] = screenTransitionAnim;
+  doc["text_height"] = textHeightMode;
 
   // Screens array (excluding API keys for security)
   JsonArray screensArr = doc.createNestedArray("screens");
@@ -1733,6 +1774,10 @@ void handleBackupRestore() {
   if (doc.containsKey("auto_rotate")) autoRotate = doc["auto_rotate"];
   if (doc.containsKey("rotate_interval")) rotateInterval = doc["rotate_interval"];
   if (doc.containsKey("screen_transition_anim")) screenTransitionAnim = doc["screen_transition_anim"];
+  if (doc.containsKey("text_height")) {
+    int th = doc["text_height"];
+    textHeightMode = (th == 5 || th == 7) ? th : 7;
+  }
 
   // Check for new multi-screen format
   if (doc.containsKey("screens")) {
@@ -1899,6 +1944,7 @@ void handleRoot() {
   // Display Settings
   html += "<h2>Display Settings</h2>";
   html += "<div class='info-row'><span class='label'>Brightness:</span><span class='value'>" + String(autoBrightness ? "Auto" : "Manual (" + String(manualBrightness) + ")") + "</span></div>";
+  html += "<div class='info-row'><span class='label'>Text Size:</span><span class='value'>" + String(textHeightMode == 5 ? "Compact (3x5)" : "Standard (7 px)") + "</span></div>";
 
   // Action Buttons
   html += "<h2>Actions</h2>";
@@ -1945,6 +1991,11 @@ void handleGeneralConfig() {
   html += "<span id='brightnessValue'>" + String(manualBrightness) + "</span>";
   html += "<p class='help'>Set brightness level (10-255)</p>";
   html += "</div>";
+
+  html += "<h2 style='margin-top: 30px;'>Text Size</h2>";
+  html += "<label><input type='radio' name='textHeight' value='7' " + String(textHeightMode == 7 ? "checked" : "") + "><span class='checkbox-label'>Standard (7 px)</span></label><br>";
+  html += "<label><input type='radio' name='textHeight' value='5' " + String(textHeightMode == 5 ? "checked" : "") + "><span class='checkbox-label'>Compact (TomThumb 3x5 px, 1 px top margin)</span></label>";
+  html += "<p class='help'>Compact mode uses TomThumb (3x5 px) with one empty pixel row at the top. Scroll and alignment use actual glyph widths.</p>";
 
   // Auto-rotation section
   html += "<h2 style='margin-top: 30px;'>Screen Auto-Rotation</h2>";
@@ -2048,6 +2099,13 @@ void handleSaveGeneralConfig() {
   Serial.print("Screen Transition Anim: ");
   Serial.println(screenTransitionAnim ? "ENABLED" : "DISABLED");
 
+  if (server.hasArg("textHeight")) {
+    int th = server.arg("textHeight").toInt();
+    textHeightMode = (th == 5 || th == 7) ? th : 7;
+  }
+  Serial.print("Text Height Mode: ");
+  Serial.println(textHeightMode);
+
   // Check if admin password should be changed
   if (server.hasArg("adminPassword")) {
     String newPassword = server.arg("adminPassword");
@@ -2066,9 +2124,12 @@ void handleSaveGeneralConfig() {
   preferences.putBool("autoRotate", autoRotate);
   preferences.putInt("rotateIntv", rotateInterval);
   preferences.putBool("scrTransAnim", screenTransitionAnim);
+  preferences.putInt("txtHeight", textHeightMode);
   preferences.end();
   Serial.println("Preferences written successfully");
   
+  scrollX = MATRIX_WIDTH;
+
   // Apply brightness immediately
   if (!autoBrightness) {
     Serial.print("Applying manual brightness: ");
@@ -2730,6 +2791,7 @@ void handleStatus() {
   doc["auto_rotate"] = autoRotate;
   doc["rotate_interval"] = rotateInterval;
   doc["screen_transition_anim"] = screenTransitionAnim;
+  doc["text_height"] = textHeightMode;
 
   JsonArray screensArr = doc.createNestedArray("screens");
   for (int i = 0; i < numScreens; i++) {
@@ -2757,12 +2819,13 @@ void handleFavicon() {
 void displayScrollText(const char* text, uint16_t color) {
   matrix.fillScreen(0);
   matrix.setTextColor(color);
-  
-  int16_t textWidth = strlen(text) * 6;
+  prepareMatrixText();
+  int16_t textY = matrixTextBaselineY();
+  int16_t textWidth = measureTextWidth(String(text));
   
   for (int x = MATRIX_WIDTH; x > -textWidth; x--) {
     matrix.fillScreen(0);
-    matrix.setCursor(x, 0);
+    matrix.setCursor(x, textY);
     matrix.print(text);
     matrix.show();
     delay(50);

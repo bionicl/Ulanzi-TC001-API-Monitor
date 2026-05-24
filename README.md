@@ -38,6 +38,10 @@ This firmware transforms your Ulanzi TC001 into a self-contained API monitoring 
 **Why This Over AWTRIX?**
 AWTRIX requires an external server to POST data to the device. This firmware polls APIs directly from the device, making it ideal for portable use on public WiFi networks where you can't run external servers.
 
+## What's New in v1.1.2
+
+- **Compact text size** - General Settings option for Standard (7 px default font) or Compact (TomThumb 3×5 px font with 1 px top margin). Uses GFX baseline positioning so glyphs occupy matrix rows 1–5. Included [`TomThumb.h`](TomThumb.h) from Adafruit GFX (BSD license).
+
 ## What's New in v1.1.1
 
 - **API Key Security Fix** - API keys are no longer sent to the browser when editing a screen. The edit form now shows a masked placeholder instead. Leaving the key field blank on save preserves the existing key
@@ -147,6 +151,7 @@ AWTRIX requires an external server to POST data to the device. This firmware pol
 - 🖼️ 8x8 icon support per screen (scrolls with text)
 - 🏷️ Optional display prefix and suffix per screen
 - 🎯 Text alignment: scroll, left, center, or right
+- 📐 Global text size: Standard (7 px) or Compact (TomThumb 3×5 px, 1 px top margin)
 - ⚡ Immediate API polling on startup (no waiting for first interval)
 
 #### Brightness Control
@@ -166,7 +171,7 @@ AWTRIX requires an external server to POST data to the device. This firmware pol
 - 💾 Stored locally (no external dependencies)
 
 #### Web Interface
-- ⚙️ General settings page (brightness, auto-rotation, admin password)
+- ⚙️ General settings page (brightness, text size, auto-rotation, screen transitions, admin password)
 - 🖥️ Screen management page (add, edit, delete, set active)
 - 🧪 API connection testing per screen
 - 📊 Status monitoring with battery info and live screen values
