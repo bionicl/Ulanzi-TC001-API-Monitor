@@ -11,7 +11,7 @@
 #include "TomThumb.h"
 
 // Project Details
-String buildNumber = "v1.1.2";
+String buildNumber = "v1.1.3";
 
 // Pin definitions
 #define BUTTON_1 26
@@ -73,6 +73,7 @@ struct Screen {
   uint8_t textColorG;
   uint8_t textColorB;
   String textColorJsonPath;
+  uint8_t textHeightMode;     // 5 = compact TomThumb (default), 7 = standard GFX
   // Runtime (not persisted)
   bool iconEnabled;
   uint16_t iconPixels[64];
@@ -90,7 +91,6 @@ bool autoRotate = false;
 int rotateInterval = 10; // seconds between auto-rotation
 unsigned long lastRotateTime = 0;
 bool screenTransitionAnim = false;
-uint8_t textHeightMode = 7; // 7 = standard GFX, 5 = compact TomThumb 3x5
 
 // Screen transition animation state
 bool transitionActive = false;
@@ -103,9 +103,11 @@ const int TRANSITION_FRAME_MS = 16;
 
 void updateScreenTransition();
 void scrollCurrentValue();
-void prepareMatrixText();
-int16_t matrixTextBaselineY();
-uint16_t measureTextWidth(const String& text);
+uint8_t normalizeTextHeight(int height);
+uint8_t screenTextHeight(int screenIndex);
+void prepareMatrixTextFor(uint8_t heightMode);
+int16_t matrixTextBaselineYFor(uint8_t heightMode);
+uint16_t measureTextWidthFor(const String& text, uint8_t heightMode);
 
 // Brightness configuration
 bool autoBrightness = false; // false = manual, true = auto (light sensor)
@@ -432,12 +434,13 @@ void scrollBatteryDisplay() {
   
   matrix.fillScreen(0);
   matrix.setTextColor(color);
-  prepareMatrixText();
-  int16_t textY = matrixTextBaselineY();
+  uint8_t th = screenTextHeight(activeScreen);
+  prepareMatrixTextFor(th);
+  int16_t textY = matrixTextBaselineYFor(th);
   
   String align = (numScreens > 0) ? screens[activeScreen].textAlign : "scroll";
   if (align == "scroll") {
-    int16_t textWidth = measureTextWidth(batteryText);
+    int16_t textWidth = measureTextWidthFor(batteryText, th);
 
     matrix.setCursor(scrollX, textY);
     matrix.print(batteryText);
@@ -490,8 +493,6 @@ void loadConfiguration() {
   autoRotate = preferences.getBool("autoRotate", false);
   rotateInterval = preferences.getInt("rotateIntv", 10);
   screenTransitionAnim = preferences.getBool("scrTransAnim", false);
-  textHeightMode = preferences.getInt("txtHeight", 7);
-  if (textHeightMode != 5 && textHeightMode != 7) textHeightMode = 7;
   numScreens = preferences.getInt("numScreens", 0);
   activeScreen = preferences.getInt("activeScr", 0);
 
@@ -516,6 +517,7 @@ void loadConfiguration() {
       screens[0].textColorG = 255;
       screens[0].textColorB = 0;
       screens[0].textColorJsonPath = "";
+      screens[0].textHeightMode = 5;
       numScreens = 1;
       activeScreen = 0;
 
@@ -567,6 +569,14 @@ void loadConfiguration() {
     screens[i].textColorG = preferences.getUChar(("s" + idx + "cg").c_str(), 255);
     screens[i].textColorB = preferences.getUChar(("s" + idx + "cb").c_str(), 0);
     screens[i].textColorJsonPath = preferences.getString(("s" + idx + "cpath").c_str(), "");
+    String thKey = "s" + idx + "thgt";
+    if (preferences.isKey(thKey.c_str())) {
+      screens[i].textHeightMode = normalizeTextHeight(preferences.getInt(thKey.c_str(), 5));
+    } else if (preferences.isKey("txtHeight")) {
+      screens[i].textHeightMode = normalizeTextHeight(preferences.getInt("txtHeight", 5));
+    } else {
+      screens[i].textHeightMode = 5;
+    }
 
     // Initialize runtime state
     screens[i].currentValue = "---";
@@ -625,6 +635,7 @@ void saveScreenToPrefs(int index) {
   preferences.putUChar(("s" + idx + "cg").c_str(), screens[index].textColorG);
   preferences.putUChar(("s" + idx + "cb").c_str(), screens[index].textColorB);
   preferences.putString(("s" + idx + "cpath").c_str(), screens[index].textColorJsonPath);
+  preferences.putInt(("s" + idx + "thgt").c_str(), screens[index].textHeightMode);
 }
 
 void removeScreenFromPrefs(int index) {
@@ -646,6 +657,7 @@ void removeScreenFromPrefs(int index) {
   preferences.remove(("s" + idx + "cg").c_str());
   preferences.remove(("s" + idx + "cb").c_str());
   preferences.remove(("s" + idx + "cpath").c_str());
+  preferences.remove(("s" + idx + "thgt").c_str());
 }
 
 void saveAllConfiguration() {
@@ -657,7 +669,6 @@ void saveAllConfiguration() {
   preferences.putBool("autoRotate", autoRotate);
   preferences.putInt("rotateIntv", rotateInterval);
   preferences.putBool("scrTransAnim", screenTransitionAnim);
-  preferences.putInt("txtHeight", textHeightMode);
   preferences.putInt("numScreens", numScreens);
   preferences.putInt("activeScr", activeScreen);
 
@@ -1215,25 +1226,34 @@ String textAlignFromBackup(JsonVariantConst textAlignKey, JsonVariantConst scrol
   return oldScroll ? "scroll" : "center";
 }
 
-void prepareMatrixText() {
-  if (textHeightMode == 5) {
+uint8_t normalizeTextHeight(int height) {
+  return (height == 7) ? 7 : 5;
+}
+
+uint8_t screenTextHeight(int screenIndex) {
+  if (screenIndex < 0 || screenIndex >= numScreens) return 5;
+  return normalizeTextHeight(screens[screenIndex].textHeightMode);
+}
+
+void prepareMatrixTextFor(uint8_t heightMode) {
+  if (heightMode == 5) {
     matrix.setFont(&TomThumb);
   } else {
     matrix.setFont();
   }
 }
 
-int16_t matrixTextBaselineY() {
+int16_t matrixTextBaselineYFor(uint8_t heightMode) {
   // TomThumb glyphs use yOffset -5 (5px tall). Cursor Y is the baseline:
   // pixels land at y..y+4 with yo=-5, so Y=6 → rows 1-5 (1px top margin on 8px matrix).
-  return (textHeightMode == 5) ? 6 : 0;
+  return (heightMode == 5) ? 6 : 0;
 }
 
-uint16_t measureTextWidth(const String& text) {
-  prepareMatrixText();
+uint16_t measureTextWidthFor(const String& text, uint8_t heightMode) {
+  prepareMatrixTextFor(heightMode);
   int16_t x1, y1;
   uint16_t w, h;
-  matrix.getTextBounds(text.c_str(), 0, matrixTextBaselineY(), &x1, &y1, &w, &h);
+  matrix.getTextBounds(text.c_str(), 0, matrixTextBaselineYFor(heightMode), &x1, &y1, &w, &h);
   return w;
 }
 
@@ -1279,8 +1299,9 @@ void drawScreenAt(int screenIndex, int16_t offsetX) {
 
   Screen& scr = screens[screenIndex];
   matrix.setTextColor(getScreenTextColor(screenIndex));
-  prepareMatrixText();
-  int16_t textY = matrixTextBaselineY();
+  uint8_t th = normalizeTextHeight(scr.textHeightMode);
+  prepareMatrixTextFor(th);
+  int16_t textY = matrixTextBaselineYFor(th);
 
   int displayWidth = scr.iconEnabled ? TEXT_WIDTH : MATRIX_WIDTH;
   int xOffset = scr.iconEnabled ? ICON_WIDTH : 0;
@@ -1339,9 +1360,10 @@ void scrollCurrentValue() {
   // Handle config mode
   if (inConfigMode) {
     matrix.setTextColor(matrix.Color(255, 165, 0));
-    prepareMatrixText();
-    int16_t textY = matrixTextBaselineY();
-    int16_t textWidth = measureTextWidth(configModeMessage);
+    uint8_t th = screenTextHeight(activeScreen);
+    prepareMatrixTextFor(th);
+    int16_t textY = matrixTextBaselineYFor(th);
+    int16_t textWidth = measureTextWidthFor(configModeMessage, th);
     matrix.setCursor(scrollX, textY);
     matrix.print(configModeMessage);
     matrix.show();
@@ -1353,8 +1375,9 @@ void scrollCurrentValue() {
   // No screens configured
   if (numScreens == 0) {
     matrix.setTextColor(matrix.Color(255, 165, 0));
-    prepareMatrixText();
-    int16_t textY = matrixTextBaselineY();
+    uint8_t th = 5;
+    prepareMatrixTextFor(th);
+    int16_t textY = matrixTextBaselineYFor(th);
     String msg = "NO API";
     int16_t x1, y1;
     uint16_t w, h;
@@ -1369,10 +1392,11 @@ void scrollCurrentValue() {
   matrix.setTextColor(getScreenTextColor(activeScreen));
 
   if (scr.textAlign == "scroll") {
-    prepareMatrixText();
-    int16_t textY = matrixTextBaselineY();
+    uint8_t th = normalizeTextHeight(scr.textHeightMode);
+    prepareMatrixTextFor(th);
+    int16_t textY = matrixTextBaselineYFor(th);
     int iconOffset = scr.iconEnabled ? (ICON_WIDTH + 1) : 0;
-    int16_t textWidth = measureTextWidth(scr.currentValue);
+    int16_t textWidth = measureTextWidthFor(scr.currentValue, th);
 
     if (scr.iconEnabled && scrollX < ICON_WIDTH) {
       for (int y = 0; y < 8; y++) {
@@ -1725,7 +1749,6 @@ void handleBackupDownload() {
   doc["auto_rotate"] = autoRotate;
   doc["rotate_interval"] = rotateInterval;
   doc["screen_transition_anim"] = screenTransitionAnim;
-  doc["text_height"] = textHeightMode;
 
   // Screens array (excluding API keys for security)
   JsonArray screensArr = doc.createNestedArray("screens");
@@ -1746,6 +1769,7 @@ void handleBackupDownload() {
     textColor.add(screens[i].textColorG);
     textColor.add(screens[i].textColorB);
     s["text_color_json_path"] = screens[i].textColorJsonPath;
+    s["text_height"] = screens[i].textHeightMode;
   }
 
   String output;
@@ -1774,10 +1798,8 @@ void handleBackupRestore() {
   if (doc.containsKey("auto_rotate")) autoRotate = doc["auto_rotate"];
   if (doc.containsKey("rotate_interval")) rotateInterval = doc["rotate_interval"];
   if (doc.containsKey("screen_transition_anim")) screenTransitionAnim = doc["screen_transition_anim"];
-  if (doc.containsKey("text_height")) {
-    int th = doc["text_height"];
-    textHeightMode = (th == 5 || th == 7) ? th : 7;
-  }
+  bool legacyGlobalTextHeight = doc.containsKey("text_height");
+  int legacyTextHeight = legacyGlobalTextHeight ? (int)doc["text_height"] : 5;
 
   // Check for new multi-screen format
   if (doc.containsKey("screens")) {
@@ -1819,6 +1841,13 @@ void handleBackupRestore() {
         screens[i].textColorB = 0;
       }
       screens[i].textColorJsonPath = s["text_color_json_path"] | "";
+      if (s.containsKey("text_height")) {
+        screens[i].textHeightMode = normalizeTextHeight(s["text_height"]);
+      } else if (legacyGlobalTextHeight) {
+        screens[i].textHeightMode = normalizeTextHeight(legacyTextHeight);
+      } else {
+        screens[i].textHeightMode = 5;
+      }
       screens[i].currentTextColor = matrix.Color(0, 255, 0);
       screens[i].apiConfigured = (screens[i].apiEndpoint.length() > 0 && screens[i].jsonPath.length() > 0);
     }
@@ -1849,6 +1878,11 @@ void handleBackupRestore() {
       screens[0].textColorB = 0;
     }
     screens[0].textColorJsonPath = doc["text_color_json_path"] | "";
+    if (doc.containsKey("text_height")) {
+      screens[0].textHeightMode = normalizeTextHeight(doc["text_height"]);
+    } else {
+      screens[0].textHeightMode = 5;
+    }
     screens[0].currentTextColor = matrix.Color(0, 255, 0);
     screens[0].apiConfigured = (screens[0].apiEndpoint.length() > 0 && screens[0].jsonPath.length() > 0);
   }
@@ -1944,8 +1978,6 @@ void handleRoot() {
   // Display Settings
   html += "<h2>Display Settings</h2>";
   html += "<div class='info-row'><span class='label'>Brightness:</span><span class='value'>" + String(autoBrightness ? "Auto" : "Manual (" + String(manualBrightness) + ")") + "</span></div>";
-  html += "<div class='info-row'><span class='label'>Text Size:</span><span class='value'>" + String(textHeightMode == 5 ? "Compact (3x5)" : "Standard (7 px)") + "</span></div>";
-
   // Action Buttons
   html += "<h2>Actions</h2>";
   html += "<button onclick='location.href=\"/config/general\"' class='button'>Config</button>";
@@ -1991,11 +2023,6 @@ void handleGeneralConfig() {
   html += "<span id='brightnessValue'>" + String(manualBrightness) + "</span>";
   html += "<p class='help'>Set brightness level (10-255)</p>";
   html += "</div>";
-
-  html += "<h2 style='margin-top: 30px;'>Text Size</h2>";
-  html += "<label><input type='radio' name='textHeight' value='7' " + String(textHeightMode == 7 ? "checked" : "") + "><span class='checkbox-label'>Standard (7 px)</span></label><br>";
-  html += "<label><input type='radio' name='textHeight' value='5' " + String(textHeightMode == 5 ? "checked" : "") + "><span class='checkbox-label'>Compact (TomThumb 3x5 px, 1 px top margin)</span></label>";
-  html += "<p class='help'>Compact mode uses TomThumb (3x5 px) with one empty pixel row at the top. Scroll and alignment use actual glyph widths.</p>";
 
   // Auto-rotation section
   html += "<h2 style='margin-top: 30px;'>Screen Auto-Rotation</h2>";
@@ -2099,13 +2126,6 @@ void handleSaveGeneralConfig() {
   Serial.print("Screen Transition Anim: ");
   Serial.println(screenTransitionAnim ? "ENABLED" : "DISABLED");
 
-  if (server.hasArg("textHeight")) {
-    int th = server.arg("textHeight").toInt();
-    textHeightMode = (th == 5 || th == 7) ? th : 7;
-  }
-  Serial.print("Text Height Mode: ");
-  Serial.println(textHeightMode);
-
   // Check if admin password should be changed
   if (server.hasArg("adminPassword")) {
     String newPassword = server.arg("adminPassword");
@@ -2124,11 +2144,8 @@ void handleSaveGeneralConfig() {
   preferences.putBool("autoRotate", autoRotate);
   preferences.putInt("rotateIntv", rotateInterval);
   preferences.putBool("scrTransAnim", screenTransitionAnim);
-  preferences.putInt("txtHeight", textHeightMode);
   preferences.end();
   Serial.println("Preferences written successfully");
-  
-  scrollX = MATRIX_WIDTH;
 
   // Apply brightness immediately
   if (!autoBrightness) {
@@ -2195,7 +2212,7 @@ void handleScreensPage() {
       String truncUrl = screens[i].apiEndpoint;
       if (truncUrl.length() > 50) truncUrl = truncUrl.substring(0, 50) + "...";
       html += "<div class='screen-detail'>Endpoint: " + htmlEscape(truncUrl) + "</div>";
-      html += "<div class='screen-detail'>Path: " + htmlEscape(screens[i].jsonPath) + " | Interval: " + String(screens[i].pollingInterval) + "s</div>";
+      html += "<div class='screen-detail'>Path: " + htmlEscape(screens[i].jsonPath) + " | Interval: " + String(screens[i].pollingInterval) + "s | Text: " + String(screens[i].textHeightMode == 7 ? "Standard" : "Compact") + "</div>";
     } else {
       html += "<div class='screen-detail' style='color:#f44336;'>Not configured (missing endpoint or JSON path)</div>";
     }
@@ -2249,6 +2266,7 @@ void handleScreenEditPage() {
   uint8_t scrTextColorG = 255;
   uint8_t scrTextColorB = 0;
   String scrTextColorPath = "";
+  uint8_t scrTextHeight = 5;
 
   if (server.hasArg("id")) {
     screenIdx = server.arg("id").toInt();
@@ -2270,6 +2288,7 @@ void handleScreenEditPage() {
       scrTextColorG = scr.textColorG;
       scrTextColorB = scr.textColorB;
       scrTextColorPath = scr.textColorJsonPath;
+      scrTextHeight = scr.textHeightMode;
     } else {
       screenIdx = -1;
     }
@@ -2353,6 +2372,11 @@ void handleScreenEditPage() {
   html += "<option value='right'" + String(scrTextAlign == "right" ? " selected" : "") + ">Right</option>";
   html += "</select>";
   html += "<p class='help'>How to position text on the LED matrix (scrolling, or static left/center/right)</p>";
+
+  html += "<label>Text Size:</label>";
+  html += "<label><input type='radio' name='textHeight' value='5' " + String(scrTextHeight != 7 ? "checked" : "") + "><span class='checkbox-label'>Compact (TomThumb 3x5 px)</span></label><br>";
+  html += "<label><input type='radio' name='textHeight' value='7' " + String(scrTextHeight == 7 ? "checked" : "") + "><span class='checkbox-label'>Standard (7 px)</span></label>";
+  html += "<p class='help'>Compact uses a smaller font with 1 px empty row at the top of the matrix.</p>";
 
   html += "<label>Polling Interval (seconds):</label>";
   html += "<input type='number' name='interval' value='" + String(scrInterval) + "' min='5' max='3600' required>";
@@ -2495,6 +2519,7 @@ void handleScreenSave() {
     scr.textColorB = 0;
     scr.textColorJsonPath = "";
     scr.textAlign = "scroll";
+    scr.textHeightMode = 5;
   }
   scr.name = server.arg("name");
   scr.apiEndpoint = server.arg("apiUrl");
@@ -2513,6 +2538,11 @@ void handleScreenSave() {
     scr.textAlign = alignArg;
   } else {
     scr.textAlign = "scroll";
+  }
+  if (server.hasArg("textHeight")) {
+    scr.textHeightMode = normalizeTextHeight(server.arg("textHeight").toInt());
+  } else if (isNew) {
+    scr.textHeightMode = 5;
   }
   scr.iconData = server.arg("iconData");
 
@@ -2791,13 +2821,13 @@ void handleStatus() {
   doc["auto_rotate"] = autoRotate;
   doc["rotate_interval"] = rotateInterval;
   doc["screen_transition_anim"] = screenTransitionAnim;
-  doc["text_height"] = textHeightMode;
 
   JsonArray screensArr = doc.createNestedArray("screens");
   for (int i = 0; i < numScreens; i++) {
     JsonObject s = screensArr.createNestedObject();
     s["name"] = screens[i].name;
     s["api_configured"] = screens[i].apiConfigured;
+    s["text_height"] = screens[i].textHeightMode;
     s["current_value"] = screens[i].currentValue;
     s["last_error"] = screens[i].lastError;
     s["icon_enabled"] = screens[i].iconEnabled;
@@ -2819,9 +2849,10 @@ void handleFavicon() {
 void displayScrollText(const char* text, uint16_t color) {
   matrix.fillScreen(0);
   matrix.setTextColor(color);
-  prepareMatrixText();
-  int16_t textY = matrixTextBaselineY();
-  int16_t textWidth = measureTextWidth(String(text));
+  uint8_t th = 5;
+  prepareMatrixTextFor(th);
+  int16_t textY = matrixTextBaselineYFor(th);
+  int16_t textWidth = measureTextWidthFor(String(text), th);
   
   for (int x = MATRIX_WIDTH; x > -textWidth; x--) {
     matrix.fillScreen(0);

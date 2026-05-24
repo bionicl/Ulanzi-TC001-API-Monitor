@@ -38,9 +38,13 @@ This firmware transforms your Ulanzi TC001 into a self-contained API monitoring 
 **Why This Over AWTRIX?**
 AWTRIX requires an external server to POST data to the device. This firmware polls APIs directly from the device, making it ideal for portable use on public WiFi networks where you can't run external servers.
 
+## What's New in v1.1.3
+
+- **Per-screen text size** - Compact (TomThumb 3×5, default) or Standard (7 px) is configured per screen on **Edit Screen**, not in General Settings. New screens default to Compact.
+
 ## What's New in v1.1.2
 
-- **Compact text size** - General Settings option for Standard (7 px default font) or Compact (TomThumb 3×5 px font with 1 px top margin). Uses GFX baseline positioning so glyphs occupy matrix rows 1–5. Included [`TomThumb.h`](TomThumb.h) from Adafruit GFX (BSD license).
+- **Compact text size (TomThumb)** - Smaller 3×5 font with correct baseline on the 8 px matrix. Included [`TomThumb.h`](TomThumb.h) from Adafruit GFX (BSD license).
 
 ## What's New in v1.1.1
 
@@ -151,7 +155,7 @@ AWTRIX requires an external server to POST data to the device. This firmware pol
 - 🖼️ 8x8 icon support per screen (scrolls with text)
 - 🏷️ Optional display prefix and suffix per screen
 - 🎯 Text alignment: scroll, left, center, or right
-- 📐 Global text size: Standard (7 px) or Compact (TomThumb 3×5 px, 1 px top margin)
+- 📐 Per-screen text size: Compact TomThumb 3×5 px (default) or Standard 7 px
 - ⚡ Immediate API polling on startup (no waiting for first interval)
 
 #### Brightness Control
@@ -171,7 +175,7 @@ AWTRIX requires an external server to POST data to the device. This firmware pol
 - 💾 Stored locally (no external dependencies)
 
 #### Web Interface
-- ⚙️ General settings page (brightness, text size, auto-rotation, screen transitions, admin password)
+- ⚙️ General settings page (brightness, auto-rotation, screen transitions, admin password)
 - 🖥️ Screen management page (add, edit, delete, set active)
 - 🧪 API connection testing per screen
 - 📊 Status monitoring with battery info and live screen values
