@@ -64,11 +64,17 @@ struct Screen {
   String displayPrefix;
   String displaySuffix;
   int pollingInterval;
-  bool scrollEnabled;
+  String textAlign;  // "scroll", "left", "center", "right"
   String iconData;
+  String textColorMode;       // "default", "static", or "api"
+  uint8_t textColorR;
+  uint8_t textColorG;
+  uint8_t textColorB;
+  String textColorJsonPath;
   // Runtime (not persisted)
   bool iconEnabled;
   uint16_t iconPixels[64];
+  uint16_t currentTextColor;
   String currentValue;
   String lastError;
   unsigned long lastAPICall;
@@ -405,9 +411,8 @@ void scrollBatteryDisplay() {
   matrix.fillScreen(0);
   matrix.setTextColor(color);
   
-  bool useScroll = (numScreens > 0) ? screens[activeScreen].scrollEnabled : true;
-  if (useScroll) {
-    // Scrolling mode
+  String align = (numScreens > 0) ? screens[activeScreen].textAlign : "scroll";
+  if (align == "scroll") {
     int16_t textWidth = batteryText.length() * 6;
 
     matrix.setCursor(scrollX, 0);
@@ -419,13 +424,21 @@ void scrollBatteryDisplay() {
       scrollX = MATRIX_WIDTH;
     }
   } else {
-    // Static mode - center the text
     int16_t x1, y1;
     uint16_t w, h;
     matrix.getTextBounds(batteryText.c_str(), 0, 0, &x1, &y1, &w, &h);
-    int16_t centerX = (MATRIX_WIDTH - w) / 2;
+    int16_t textX;
+    if (align == "left") {
+      textX = 0;
+    } else if (align == "right") {
+      textX = MATRIX_WIDTH - w;
+      if (textX < 0) textX = 0;
+    } else {
+      textX = (MATRIX_WIDTH - w) / 2;
+      if (textX < 0) textX = 0;
+    }
 
-    matrix.setCursor(centerX, 0);
+    matrix.setCursor(textX, 0);
     matrix.print(batteryText);
     matrix.show();
   }
@@ -468,8 +481,14 @@ void loadConfiguration() {
       screens[0].displayPrefix = preferences.getString("prefix", "");
       screens[0].displaySuffix = preferences.getString("suffix", "");
       screens[0].pollingInterval = preferences.getInt("interval", 60);
-      screens[0].scrollEnabled = preferences.getBool("scroll", true);
+      bool legacyScroll = preferences.getBool("scroll", true);
+      screens[0].textAlign = legacyScroll ? "scroll" : "center";
       screens[0].iconData = preferences.getString("iconData", "");
+      screens[0].textColorMode = "default";
+      screens[0].textColorR = 0;
+      screens[0].textColorG = 255;
+      screens[0].textColorB = 0;
+      screens[0].textColorJsonPath = "";
       numScreens = 1;
       activeScreen = 0;
 
@@ -504,8 +523,23 @@ void loadConfiguration() {
     screens[i].displayPrefix = preferences.getString(("s" + idx + "pfx").c_str(), "");
     screens[i].displaySuffix = preferences.getString(("s" + idx + "sfx").c_str(), "");
     screens[i].pollingInterval = preferences.getInt(("s" + idx + "intv").c_str(), 60);
-    screens[i].scrollEnabled = preferences.getBool(("s" + idx + "scrl").c_str(), true);
+    String alignKey = "s" + idx + "align";
+    if (preferences.isKey(alignKey.c_str())) {
+      screens[i].textAlign = preferences.getString(alignKey.c_str(), "scroll");
+    } else {
+      bool oldScroll = preferences.getBool(("s" + idx + "scrl").c_str(), true);
+      screens[i].textAlign = oldScroll ? "scroll" : "center";
+    }
+    if (screens[i].textAlign != "scroll" && screens[i].textAlign != "left" &&
+        screens[i].textAlign != "center" && screens[i].textAlign != "right") {
+      screens[i].textAlign = "scroll";
+    }
     screens[i].iconData = preferences.getString(("s" + idx + "icon").c_str(), "");
+    screens[i].textColorMode = preferences.getString(("s" + idx + "tclr").c_str(), "default");
+    screens[i].textColorR = preferences.getUChar(("s" + idx + "cr").c_str(), 0);
+    screens[i].textColorG = preferences.getUChar(("s" + idx + "cg").c_str(), 255);
+    screens[i].textColorB = preferences.getUChar(("s" + idx + "cb").c_str(), 0);
+    screens[i].textColorJsonPath = preferences.getString(("s" + idx + "cpath").c_str(), "");
 
     // Initialize runtime state
     screens[i].currentValue = "---";
@@ -513,6 +547,7 @@ void loadConfiguration() {
     screens[i].lastAPICall = 0;
     screens[i].apiConfigured = (screens[i].apiEndpoint.length() > 0 && screens[i].jsonPath.length() > 0);
     screens[i].iconEnabled = false;
+    screens[i].currentTextColor = matrix.Color(0, 255, 0);
 
     if (screens[i].iconData.length() > 0) {
       parseIconData(screens[i].iconData, screens[i].iconPixels, screens[i].iconEnabled);
@@ -555,8 +590,14 @@ void saveScreenToPrefs(int index) {
   preferences.putString(("s" + idx + "pfx").c_str(), screens[index].displayPrefix);
   preferences.putString(("s" + idx + "sfx").c_str(), screens[index].displaySuffix);
   preferences.putInt(("s" + idx + "intv").c_str(), screens[index].pollingInterval);
-  preferences.putBool(("s" + idx + "scrl").c_str(), screens[index].scrollEnabled);
+  preferences.putString(("s" + idx + "align").c_str(), screens[index].textAlign);
+  preferences.remove(("s" + idx + "scrl").c_str());
   preferences.putString(("s" + idx + "icon").c_str(), screens[index].iconData);
+  preferences.putString(("s" + idx + "tclr").c_str(), screens[index].textColorMode);
+  preferences.putUChar(("s" + idx + "cr").c_str(), screens[index].textColorR);
+  preferences.putUChar(("s" + idx + "cg").c_str(), screens[index].textColorG);
+  preferences.putUChar(("s" + idx + "cb").c_str(), screens[index].textColorB);
+  preferences.putString(("s" + idx + "cpath").c_str(), screens[index].textColorJsonPath);
 }
 
 void removeScreenFromPrefs(int index) {
@@ -570,8 +611,14 @@ void removeScreenFromPrefs(int index) {
   preferences.remove(("s" + idx + "pfx").c_str());
   preferences.remove(("s" + idx + "sfx").c_str());
   preferences.remove(("s" + idx + "intv").c_str());
+  preferences.remove(("s" + idx + "align").c_str());
   preferences.remove(("s" + idx + "scrl").c_str());
   preferences.remove(("s" + idx + "icon").c_str());
+  preferences.remove(("s" + idx + "tclr").c_str());
+  preferences.remove(("s" + idx + "cr").c_str());
+  preferences.remove(("s" + idx + "cg").c_str());
+  preferences.remove(("s" + idx + "cb").c_str());
+  preferences.remove(("s" + idx + "cpath").c_str());
 }
 
 void saveAllConfiguration() {
@@ -833,6 +880,63 @@ void onScreenSwitch() {
 // API Polling Functions
 // ============================================
 
+int hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+uint8_t expandHexDigit(char c) {
+  int n = hexNibble(c);
+  if (n < 0) return 0;
+  return (uint8_t)(n * 17);
+}
+
+uint8_t parseHexByte(const String& str, int start) {
+  int n1 = hexNibble(str.charAt(start));
+  int n2 = hexNibble(str.charAt(start + 1));
+  if (n1 < 0 || n2 < 0) return 0;
+  return (uint8_t)((n1 << 4) | n2);
+}
+
+bool parseHexColor(const String& value, uint8_t& r, uint8_t& g, uint8_t& b) {
+  String s = value;
+  s.trim();
+  if (s.length() == 0) return false;
+
+  int comma1 = s.indexOf(',');
+  if (comma1 > 0) {
+    int comma2 = s.indexOf(',', comma1 + 1);
+    if (comma2 > comma1) {
+      r = (uint8_t)s.substring(0, comma1).toInt();
+      g = (uint8_t)s.substring(comma1 + 1, comma2).toInt();
+      b = (uint8_t)s.substring(comma2 + 1).toInt();
+      return true;
+    }
+  }
+
+  if (s.startsWith("#")) {
+    s = s.substring(1);
+  }
+
+  if (s.length() == 3) {
+    r = expandHexDigit(s.charAt(0));
+    g = expandHexDigit(s.charAt(1));
+    b = expandHexDigit(s.charAt(2));
+    return true;
+  }
+
+  if (s.length() == 6) {
+    r = parseHexByte(s, 0);
+    g = parseHexByte(s, 2);
+    b = parseHexByte(s, 4);
+    return true;
+  }
+
+  return false;
+}
+
 void pollScreenAPI(int index) {
   if (index < 0 || index >= numScreens) return;
   Screen& scr = screens[index];
@@ -875,6 +979,13 @@ void pollScreenAPI(int index) {
         if (value.length() > 0) {
           scr.currentValue = scr.displayPrefix + value + scr.displaySuffix;
           scr.lastError = "";
+          if (scr.textColorMode == "api" && scr.textColorJsonPath.length() > 0) {
+            String colorStr = extractJSONValue(payload, scr.textColorJsonPath);
+            uint8_t cr, cg, cb;
+            if (parseHexColor(colorStr, cr, cg, cb)) {
+              scr.currentTextColor = matrix.Color(cr, cg, cb);
+            }
+          }
           Serial.println("[Screen " + String(index) + "] Value: " + scr.currentValue);
           if (index == activeScreen) {
             scrollX = MATRIX_WIDTH;
@@ -1025,6 +1136,32 @@ String extractJSONValue(const String& json, const String& path) {
   return "";
 }
 
+String textAlignFromBackup(JsonVariantConst textAlignKey, JsonVariantConst scrollEnabledKey) {
+  if (!textAlignKey.isNull()) {
+    String align = textAlignKey.as<String>();
+    if (align == "scroll" || align == "left" || align == "center" || align == "right") {
+      return align;
+    }
+    return "scroll";
+  }
+  bool oldScroll = scrollEnabledKey | true;
+  return oldScroll ? "scroll" : "center";
+}
+
+int16_t staticTextXForAlign(const String& textAlign, int xOffset, int displayWidth, uint16_t w) {
+  int16_t textX;
+  if (textAlign == "left") {
+    textX = xOffset;
+  } else if (textAlign == "right") {
+    textX = xOffset + displayWidth - w;
+    if (textX < xOffset) textX = xOffset;
+  } else {
+    textX = xOffset + (displayWidth - w) / 2;
+    if (textX < xOffset) textX = xOffset;
+  }
+  return textX;
+}
+
 void scrollCurrentValue() {
   matrix.fillScreen(0);
 
@@ -1058,12 +1195,16 @@ void scrollCurrentValue() {
   uint16_t color;
   if (scr.lastError.length() > 0) {
     color = matrix.Color(255, 0, 0);
+  } else if (scr.textColorMode == "static") {
+    color = matrix.Color(scr.textColorR, scr.textColorG, scr.textColorB);
+  } else if (scr.textColorMode == "api") {
+    color = scr.currentTextColor;
   } else {
     color = matrix.Color(0, 255, 0);
   }
   matrix.setTextColor(color);
 
-  if (scr.scrollEnabled) {
+  if (scr.textAlign == "scroll") {
     int iconOffset = scr.iconEnabled ? (ICON_WIDTH + 1) : 0;
     int16_t textWidth = scr.currentValue.length() * 6;
 
@@ -1101,10 +1242,9 @@ void scrollCurrentValue() {
     uint16_t w, h;
     matrix.getTextBounds(scr.currentValue.c_str(), 0, 0, &x1, &y1, &w, &h);
 
-    int16_t centerX = xOffset + (displayWidth - w) / 2;
-    if (centerX < xOffset) centerX = xOffset;
+    int16_t textX = staticTextXForAlign(scr.textAlign, xOffset, displayWidth, w);
 
-    matrix.setCursor(centerX, 0);
+    matrix.setCursor(textX, 0);
     matrix.print(scr.currentValue);
     matrix.show();
   }
@@ -1448,8 +1588,14 @@ void handleBackupDownload() {
     s["display_prefix"] = screens[i].displayPrefix;
     s["display_suffix"] = screens[i].displaySuffix;
     s["polling_interval"] = screens[i].pollingInterval;
-    s["scroll_enabled"] = screens[i].scrollEnabled;
+    s["text_align"] = screens[i].textAlign;
     s["icon_data"] = screens[i].iconData;
+    s["text_color_mode"] = screens[i].textColorMode;
+    JsonArray textColor = s.createNestedArray("text_color");
+    textColor.add(screens[i].textColorR);
+    textColor.add(screens[i].textColorG);
+    textColor.add(screens[i].textColorB);
+    s["text_color_json_path"] = screens[i].textColorJsonPath;
   }
 
   String output;
@@ -1502,8 +1648,23 @@ void handleBackupRestore() {
       screens[i].displayPrefix = s["display_prefix"] | "";
       screens[i].displaySuffix = s["display_suffix"] | "";
       screens[i].pollingInterval = s["polling_interval"] | 60;
-      screens[i].scrollEnabled = s["scroll_enabled"] | true;
+      screens[i].textAlign = textAlignFromBackup(s["text_align"], s["scroll_enabled"]);
       screens[i].iconData = s["icon_data"] | "";
+      screens[i].textColorMode = s["text_color_mode"] | "default";
+      if (s.containsKey("text_color") && s["text_color"].is<JsonArray>()) {
+        JsonArray tc = s["text_color"].as<JsonArray>();
+        if (tc.size() >= 3) {
+          screens[i].textColorR = tc[0] | 0;
+          screens[i].textColorG = tc[1] | 255;
+          screens[i].textColorB = tc[2] | 0;
+        }
+      } else {
+        screens[i].textColorR = 0;
+        screens[i].textColorG = 255;
+        screens[i].textColorB = 0;
+      }
+      screens[i].textColorJsonPath = s["text_color_json_path"] | "";
+      screens[i].currentTextColor = matrix.Color(0, 255, 0);
       screens[i].apiConfigured = (screens[i].apiEndpoint.length() > 0 && screens[i].jsonPath.length() > 0);
     }
   } else if (doc.containsKey("api_endpoint")) {
@@ -1517,8 +1678,23 @@ void handleBackupRestore() {
     screens[0].displayPrefix = doc["display_prefix"] | "";
     screens[0].displaySuffix = doc["display_suffix"] | "";
     screens[0].pollingInterval = doc["polling_interval"] | 60;
-    screens[0].scrollEnabled = doc["scroll_enabled"] | true;
+    screens[0].textAlign = textAlignFromBackup(doc["text_align"], doc["scroll_enabled"]);
     screens[0].iconData = doc["icon_data"] | "";
+    screens[0].textColorMode = doc["text_color_mode"] | "default";
+    if (doc.containsKey("text_color") && doc["text_color"].is<JsonArray>()) {
+      JsonArray tc = doc["text_color"].as<JsonArray>();
+      if (tc.size() >= 3) {
+        screens[0].textColorR = tc[0] | 0;
+        screens[0].textColorG = tc[1] | 255;
+        screens[0].textColorB = tc[2] | 0;
+      }
+    } else {
+      screens[0].textColorR = 0;
+      screens[0].textColorG = 255;
+      screens[0].textColorB = 0;
+    }
+    screens[0].textColorJsonPath = doc["text_color_json_path"] | "";
+    screens[0].currentTextColor = matrix.Color(0, 255, 0);
     screens[0].apiConfigured = (screens[0].apiEndpoint.length() > 0 && screens[0].jsonPath.length() > 0);
   }
 
@@ -1885,8 +2061,13 @@ void handleScreenEditPage() {
   String scrPrefix = "";
   String scrSuffix = "";
   int scrInterval = 60;
-  bool scrScroll = true;
+  String scrTextAlign = "scroll";
   String scrIconData = "";
+  String scrTextColorMode = "default";
+  uint8_t scrTextColorR = 0;
+  uint8_t scrTextColorG = 255;
+  uint8_t scrTextColorB = 0;
+  String scrTextColorPath = "";
 
   if (server.hasArg("id")) {
     screenIdx = server.arg("id").toInt();
@@ -1901,12 +2082,20 @@ void handleScreenEditPage() {
       scrPrefix = scr.displayPrefix;
       scrSuffix = scr.displaySuffix;
       scrInterval = scr.pollingInterval;
-      scrScroll = scr.scrollEnabled;
+      scrTextAlign = scr.textAlign;
       scrIconData = scr.iconData;
+      scrTextColorMode = scr.textColorMode;
+      scrTextColorR = scr.textColorR;
+      scrTextColorG = scr.textColorG;
+      scrTextColorB = scr.textColorB;
+      scrTextColorPath = scr.textColorJsonPath;
     } else {
       screenIdx = -1;
     }
   }
+
+  char textColorHex[8];
+  snprintf(textColorHex, sizeof(textColorHex), "#%02X%02X%02X", scrTextColorR, scrTextColorG, scrTextColorB);
 
   String maskedKey = "";
   if (scrKey.length() > 0) {
@@ -1951,13 +2140,38 @@ void handleScreenEditPage() {
   html += "<input type='text' name='suffix' value='" + htmlEscape(scrSuffix) + "' placeholder=' open'>";
   html += "<p class='help'>Text to show after the value (optional)</p>";
 
+  html += "<label>Text Color:</label>";
+  html += "<select name='textColorMode' id='textColorMode' onchange='updateTextColorFields()'>";
+  html += "<option value='default'" + String(scrTextColorMode == "default" ? " selected" : "") + ">Default (green on success, red on error)</option>";
+  html += "<option value='static'" + String(scrTextColorMode == "static" ? " selected" : "") + ">Static color</option>";
+  html += "<option value='api'" + String(scrTextColorMode == "api" ? " selected" : "") + ">From API (JSON path)</option>";
+  html += "</select>";
+  html += "<p class='help'>How to color the text on the LED matrix</p>";
+
+  html += "<div id='textColorStatic'>";
+  html += "<label>Static Text Color:</label>";
+  html += "<input type='color' name='textColor' value='" + String(textColorHex) + "'>";
+  html += "</div>";
+
+  html += "<div id='textColorApi'>";
+  html += "<label>Color JSON Path:</label>";
+  html += "<input type='text' name='textColorPath' value='" + htmlEscape(scrTextColorPath) + "' placeholder='data.color'>";
+  html += "<p class='help'>Hex color from the same API response (e.g. #FF0000 or FF0000)</p>";
+  html += "</div>";
+
   html += "<label>Icon Data (8x8 RGB pixels):</label>";
   html += "<textarea name='iconData' id='iconData' placeholder='[[255,0,0],[0,255,0],...]'>" + htmlEscape(scrIconData) + "</textarea>";
   html += "<p class='help'>JSON array of 64 RGB pixels [r,g,b] for 8x8 icon (optional)</p>";
   html += "<div id='iconPreview' class='icon-preview'></div>";
 
-  html += "<label><input type='checkbox' name='scroll' " + String(scrScroll ? "checked" : "") + "><span class='checkbox-label'>Enable Scrolling</span></label>";
-  html += "<p class='help'>Uncheck for static centered display</p>";
+  html += "<label>Text Alignment:</label>";
+  html += "<select name='textAlign'>";
+  html += "<option value='scroll'" + String(scrTextAlign == "scroll" ? " selected" : "") + ">Scrolling</option>";
+  html += "<option value='left'" + String(scrTextAlign == "left" ? " selected" : "") + ">Left</option>";
+  html += "<option value='center'" + String(scrTextAlign == "center" ? " selected" : "") + ">Center</option>";
+  html += "<option value='right'" + String(scrTextAlign == "right" ? " selected" : "") + ">Right</option>";
+  html += "</select>";
+  html += "<p class='help'>How to position text on the LED matrix (scrolling, or static left/center/right)</p>";
 
   html += "<label>Polling Interval (seconds):</label>";
   html += "<input type='number' name='interval' value='" + String(scrInterval) + "' min='5' max='3600' required>";
@@ -1976,6 +2190,12 @@ void handleScreenEditPage() {
 
   // JavaScript
   html += "<script>";
+  html += "function updateTextColorFields() {";
+  html += "  var mode = document.getElementById('textColorMode').value;";
+  html += "  document.getElementById('textColorStatic').style.display = (mode === 'static') ? 'block' : 'none';";
+  html += "  document.getElementById('textColorApi').style.display = (mode === 'api') ? 'block' : 'none';";
+  html += "}";
+
   if (!isNew) {
     html += "function testAPI() {";
     html += "  document.getElementById('testResult').innerHTML = '<p>Testing connection...</p>';";
@@ -2063,7 +2283,7 @@ void handleScreenEditPage() {
   html += "}";
 
   html += "document.getElementById('iconData').addEventListener('input', updatePreviewFromJSON);";
-  html += "window.addEventListener('load', function() { updatePreviewFromJSON(); });";
+  html += "window.addEventListener('load', function() { updateTextColorFields(); updatePreviewFromJSON(); });";
 
   html += "</script>";
   html += "</body></html>";
@@ -2087,6 +2307,14 @@ void handleScreenSave() {
   }
 
   Screen& scr = screens[screenIdx];
+  if (isNew) {
+    scr.textColorMode = "default";
+    scr.textColorR = 0;
+    scr.textColorG = 255;
+    scr.textColorB = 0;
+    scr.textColorJsonPath = "";
+    scr.textAlign = "scroll";
+  }
   scr.name = server.arg("name");
   scr.apiEndpoint = server.arg("apiUrl");
   scr.apiHeaderName = server.arg("apiHeader");
@@ -2099,8 +2327,31 @@ void handleScreenSave() {
   scr.displayPrefix = server.arg("prefix");
   scr.displaySuffix = server.arg("suffix");
   scr.pollingInterval = server.arg("interval").toInt();
-  scr.scrollEnabled = server.hasArg("scroll");
+  String alignArg = server.arg("textAlign");
+  if (alignArg == "left" || alignArg == "center" || alignArg == "right") {
+    scr.textAlign = alignArg;
+  } else {
+    scr.textAlign = "scroll";
+  }
   scr.iconData = server.arg("iconData");
+
+  String colorMode = server.arg("textColorMode");
+  if (colorMode == "static" || colorMode == "api") {
+    scr.textColorMode = colorMode;
+  } else {
+    scr.textColorMode = "default";
+  }
+  scr.textColorJsonPath = server.arg("textColorPath");
+  String colorInput = server.arg("textColor");
+  if (scr.textColorMode == "static" && colorInput.length() > 0) {
+    uint8_t cr, cg, cb;
+    if (parseHexColor(colorInput, cr, cg, cb)) {
+      scr.textColorR = cr;
+      scr.textColorG = cg;
+      scr.textColorB = cb;
+    }
+  }
+  scr.currentTextColor = matrix.Color(scr.textColorR, scr.textColorG, scr.textColorB);
 
   if (scr.pollingInterval < 5) scr.pollingInterval = 5;
   if (scr.pollingInterval > 3600) scr.pollingInterval = 3600;
@@ -2118,6 +2369,12 @@ void handleScreenSave() {
     scr.currentValue = "---";
     scr.lastError = "";
     scr.lastAPICall = 0;
+    if (scr.textColorMode == "default") {
+      scr.textColorR = 0;
+      scr.textColorG = 255;
+      scr.textColorB = 0;
+    }
+    scr.currentTextColor = matrix.Color(scr.textColorR, scr.textColorG, scr.textColorB);
   }
 
   // Save to NVS
@@ -2271,6 +2528,20 @@ void handleTestAPI() {
         response += "Extracted Value: " + extractedValue;
       } else {
         response += "Error: Could not extract value from JSON path: " + scr.jsonPath;
+      }
+
+      if (scr.textColorMode == "api" && scr.textColorJsonPath.length() > 0) {
+        String colorStr = extractJSONValue(payload, scr.textColorJsonPath);
+        uint8_t cr, cg, cb;
+        if (parseHexColor(colorStr, cr, cg, cb)) {
+          char hexBuf[8];
+          snprintf(hexBuf, sizeof(hexBuf), "%02X%02X%02X", cr, cg, cb);
+          response += "\nExtracted Color: #" + String(hexBuf) + " (RGB: " + String(cr) + ", " + String(cg) + ", " + String(cb) + ")";
+        } else if (colorStr.length() > 0) {
+          response += "\nError: Could not parse color from: " + colorStr;
+        } else {
+          response += "\nError: Could not extract color from JSON path: " + scr.textColorJsonPath;
+        }
       }
     } else {
       response += "Error: " + http.getString();

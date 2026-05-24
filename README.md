@@ -146,7 +146,7 @@ AWTRIX requires an external server to POST data to the device. This firmware pol
 - 🎨 Color-coded status (green=ok, red=error, yellow=warning)
 - 🖼️ 8x8 icon support per screen (scrolls with text)
 - 🏷️ Optional display prefix and suffix per screen
-- 🎯 Automatic centering in static mode
+- 🎯 Text alignment: scroll, left, center, or right
 - ⚡ Immediate API polling on startup (no waiting for first interval)
 
 #### Brightness Control
@@ -327,8 +327,9 @@ Navigate to your TC001's IP address (displayed on the LED matrix) to access the 
 | **JSON Path** | Path to value in JSON response | `OverdueWorkflows[Username=John].Overdue` |
 | **Display Prefix** | Text before the value (optional) | `Tickets: ` |
 | **Display Suffix** | Text after the value (optional) | ` open` |
+| **Text Color** | Default (green/red), static color picker, or hex from API via JSON path | `data.color` → `#FF8800` |
 | **Icon Data** | 8x8 RGB icon as JSON array (optional) | `[[255,0,0],[0,255,0],...]` |
-| **Enable Scrolling** | Checkbox for scroll vs static mode | Checked = scrolling (default) |
+| **Text Alignment** | Scrolling, or static left / center / right | `scroll` (default), `left`, `center`, `right` |
 | **Polling Interval** | Seconds between API calls | `60` (range: 5-3600) |
 | **Auto Brightness** | Checkbox for automatic brightness control | Checked = use light sensor, Unchecked = manual |
 | **Manual Brightness** | Slider for brightness level (when auto disabled) | `40` (range: 1-255) |
@@ -378,6 +379,14 @@ JSON Path: `OverdueWorkflows[Username=Jane].Overdue`
 ```
 JSON Path: `TC001MatrixDisplay[0].OpenRequests`
 
+**Value and color from the same API response:**
+```json
+{ "count": 12, "color": "#FF8800" }
+```
+- JSON Path (value): `count`
+- Color JSON Path: `color`
+- Supported color formats: `#RRGGBB`, `RRGGBB`, `#RGB`, or `r,g,b`
+
 #### Array Filtering Syntax
 
 Use the format `arrayName[fieldName=value]` to filter arrays:
@@ -399,20 +408,20 @@ Icons are 8x8 pixels in RGB format. The JSON array should contain exactly 64 pix
 
 Each pixel is `[red, green, blue]` with values 0-255.
 
-The web interface provides a live preview of your icon before saving. Icons scroll alongside the text when scrolling is enabled, or display static with centered text when scrolling is disabled.
+The web interface provides a live preview of your icon before saving. Icons scroll alongside the text when alignment is **Scrolling**, or stay fixed on the left when using static alignment modes.
 
-### Display Modes
+### Text Alignment Modes
 
-**Scrolling Mode (default):**
+**Scrolling (default):**
 - Icon and text scroll continuously from right to left
 - Ideal for longer text or when you want continuous motion
 - Full content visibility over time
 
-**Static Mode:**
-- Content is centered on the display
-- Perfect for short displays (e.g., icon + number)
-- If content is wider than 32 pixels, it left-aligns
-- Ideal for at-a-glance monitoring
+**Left / Center / Right:**
+- Text stays fixed in the text area (24 pixels wide when an 8×8 icon is shown, full width otherwise)
+- **Center** matches the previous “static” checkbox behavior
+- If text is wider than the available area, it clips from the right (left and center) or from the left (right)
+- Ideal for at-a-glance monitoring with icon + short value
 
 ### Brightness Configuration
 
@@ -487,7 +496,7 @@ Battery monitoring runs automatically with these settings:
 Once configured, the device will:
 1. Auto-connect to saved WiFi on startup
 2. Begin polling the API at configured intervals
-3. Display the current value (scrolling or static based on settings)
+3. Display the current value (alignment: scroll, left, center, or right)
 4. Update automatically when new data arrives
 5. Show error messages if API fails
 
@@ -522,7 +531,7 @@ Once configured, the device will:
 - Display Prefix: `Tickets: `
 - Display Suffix: ` open`
 - Icon Data: `[[...]]` (ticket icon)
-- Enable Scrolling: ✅ Checked
+- Text Alignment: Scrolling
 - Polling Interval: `60`
 - Auto Brightness: ✅ Checked
 - Manual Brightness: N/A (auto mode)
@@ -546,7 +555,7 @@ Once configured, the device will:
 - Display Prefix: `` (empty)
 - Display Suffix: `` (empty)
 - Icon Data: `[[...]]` (person icon)
-- Enable Scrolling: ⬜ Unchecked (static)
+- Text Alignment: Center
 - Polling Interval: `300`
 - Auto Brightness: ⬜ Unchecked
 - Manual Brightness: `80`
@@ -568,7 +577,7 @@ Once configured, the device will:
 - JSON Path: `price`
 - Display Prefix: `BTC: $`
 - Display Suffix: `` (empty)
-- Enable Scrolling: ✅ Checked
+- Text Alignment: Scrolling
 - Polling Interval: `120`
 - Auto Brightness: ✅ Checked
 - Manual Brightness: N/A (auto mode)
@@ -636,8 +645,11 @@ Backup files are stored in JSON format and can be viewed/edited in any text edit
   "display_prefix": "Count: ",
   "display_suffix": "",
   "polling_interval": 60,
-  "scroll_enabled": true,
+  "text_align": "scroll",
   "icon_data": "[[255,0,0],...]",
+  "text_color_mode": "static",
+  "text_color": [255, 136, 0],
+  "text_color_json_path": "data.color",
   "auto_brightness": true,
   "manual_brightness": 40
 }
@@ -724,7 +736,7 @@ Main components:
 - **WiFi Management** - WiFiManager integration, AP mode
 - **Web Server** - Configuration interface, status pages
 - **API Client** - HTTP requests, JSON parsing with array filtering
-- **Display Manager** - LED matrix control, scrolling and static modes
+- **Display Manager** - LED matrix control, text alignment modes
 - **Icon Handler** - JSON icon parsing, RGB565 conversion, rendering
 - **Battery Monitor** - Voltage reading, percentage calculation, alerts
 - **Storage** - NVS preferences for configuration
