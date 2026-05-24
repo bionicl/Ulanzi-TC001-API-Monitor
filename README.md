@@ -327,6 +327,7 @@ Navigate to your TC001's IP address (displayed on the LED matrix) to access the 
 | **JSON Path** | Path to value in JSON response | `OverdueWorkflows[Username=John].Overdue` |
 | **Display Prefix** | Text before the value (optional) | `Tickets: ` |
 | **Display Suffix** | Text after the value (optional) | ` open` |
+| **Text Color** | Default (green/red), static color picker, or hex from API via JSON path | `data.color` → `#FF8800` |
 | **Icon Data** | 8x8 RGB icon as JSON array (optional) | `[[255,0,0],[0,255,0],...]` |
 | **Enable Scrolling** | Checkbox for scroll vs static mode | Checked = scrolling (default) |
 | **Polling Interval** | Seconds between API calls | `60` (range: 5-3600) |
@@ -377,6 +378,14 @@ JSON Path: `OverdueWorkflows[Username=Jane].Overdue`
 }
 ```
 JSON Path: `TC001MatrixDisplay[0].OpenRequests`
+
+**Value and color from the same API response:**
+```json
+{ "count": 12, "color": "#FF8800" }
+```
+- JSON Path (value): `count`
+- Color JSON Path: `color`
+- Supported color formats: `#RRGGBB`, `RRGGBB`, `#RGB`, or `r,g,b`
 
 #### Array Filtering Syntax
 
@@ -638,6 +647,9 @@ Backup files are stored in JSON format and can be viewed/edited in any text edit
   "polling_interval": 60,
   "scroll_enabled": true,
   "icon_data": "[[255,0,0],...]",
+  "text_color_mode": "static",
+  "text_color": [255, 136, 0],
+  "text_color_json_path": "data.color",
   "auto_brightness": true,
   "manual_brightness": 40
 }
