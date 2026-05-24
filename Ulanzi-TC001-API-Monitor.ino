@@ -8,10 +8,11 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
+#include <time.h>
 #include "TomThumb.h"
 
 // Project Details
-String buildNumber = "v1.1.4";
+String buildNumber = "v1.1.5";
 
 // Pin definitions
 #define BUTTON_1 26
@@ -29,6 +30,8 @@ String buildNumber = "v1.1.4";
 #define TEXT_WIDTH 24
 #define COLOR_BAR_SLOTS 24
 #define COLOR_BAR_ROW (MATRIX_HEIGHT - 1)
+#define HOUR_PULSE_PERIOD_MS 3500
+#define NTP_RESYNC_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
 
 // Screen configuration
 #define MAX_SCREENS 5
@@ -97,6 +100,9 @@ bool autoRotate = false;
 int rotateInterval = 10; // seconds between auto-rotation
 unsigned long lastRotateTime = 0;
 bool screenTransitionAnim = false;
+bool timeConfigured = false;
+bool timeSynced = false;
+unsigned long lastNtpSyncMs = 0;
 
 // Screen transition animation state
 bool transitionActive = false;
@@ -118,6 +124,11 @@ bool navigateJsonPath(JsonVariant root, const String& path, JsonVariant& out);
 void initScreenColorBarState(Screen& scr);
 bool updateScreenColorBar(Screen& scr, const String& jsonPayload);
 void drawColorBar(const Screen& scr, int16_t offsetX);
+void ensureTimeConfigured();
+void syncDeviceTime();
+int getLocalHourSlot();
+uint16_t blendColorTowardWhite(uint16_t color, float amount);
+float hourPulseBlendAmount();
 
 // Brightness configuration
 bool autoBrightness = false; // false = manual, true = auto (light sensor)
@@ -276,6 +287,9 @@ void setup() {
   Serial.println("Web server started");
   
   displayScrollText("READY", matrix.Color(0, 255, 255));
+
+  syncDeviceTime();
+  lastNtpSyncMs = millis();
   
   // Poll active screen immediately if configured
   if (numScreens > 0 && screens[activeScreen].apiConfigured) {
@@ -332,6 +346,20 @@ void loop() {
     if (screens[i].apiConfigured && (millis() - screens[i].lastAPICall > (unsigned long)(screens[i].pollingInterval * 1000))) {
       pollScreenAPI(i);
       screens[i].lastAPICall = millis();
+    }
+  }
+
+  if (!timeSynced || (millis() - lastNtpSyncMs > NTP_RESYNC_INTERVAL_MS)) {
+    bool anyColorBar = false;
+    for (int i = 0; i < numScreens; i++) {
+      if (screens[i].colorBarJsonPath.length() > 0) {
+        anyColorBar = true;
+        break;
+      }
+    }
+    if (anyColorBar && WiFi.status() == WL_CONNECTED) {
+      syncDeviceTime();
+      lastNtpSyncMs = millis();
     }
   }
 
@@ -1246,6 +1274,54 @@ uint16_t colorBarGrayPixel() {
   return matrix.Color(48, 48, 48);
 }
 
+void ensureTimeConfigured() {
+  if (timeConfigured) return;
+  setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+  tzset();
+  timeConfigured = true;
+}
+
+void syncDeviceTime() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  ensureTimeConfigured();
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  struct tm timeinfo;
+  timeSynced = getLocalTime(&timeinfo, 15000);
+  if (timeSynced) {
+    char timeBuf[32];
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    Serial.print("NTP time synced: ");
+    Serial.println(timeBuf);
+  } else {
+    Serial.println("NTP time sync failed");
+  }
+}
+
+int getLocalHourSlot() {
+  if (!timeSynced) return -1;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return -1;
+  return timeinfo.tm_hour;
+}
+
+float hourPulseBlendAmount() {
+  float phase = (millis() % HOUR_PULSE_PERIOD_MS) / (float)HOUR_PULSE_PERIOD_MS * 2.0f * PI;
+  return (sinf(phase) + 1.0f) * 0.5f;
+}
+
+uint16_t blendColorTowardWhite(uint16_t color, float amount) {
+  if (amount <= 0.0f) return color;
+  if (amount >= 1.0f) return matrix.Color(255, 255, 255);
+
+  uint8_t r = ((color >> 11) & 0x1F) << 3;
+  uint8_t g = ((color >> 5) & 0x3F) << 2;
+  uint8_t b = (color & 0x1F) << 3;
+  r = r + (uint8_t)((255 - r) * amount);
+  g = g + (uint8_t)((255 - g) * amount);
+  b = b + (uint8_t)((255 - b) * amount);
+  return matrix.Color(r, g, b);
+}
+
 void initScreenColorBarState(Screen& scr) {
   scr.colorBarEnabled = scr.colorBarJsonPath.length() > 0;
   scr.colorBarValid = false;
@@ -1316,13 +1392,19 @@ void drawColorBar(const Screen& scr, int16_t offsetX) {
 
   int barX = scr.iconEnabled ? ICON_WIDTH : 0;
   int barW = scr.iconEnabled ? COLOR_BAR_SLOTS : MATRIX_WIDTH;
+  int hourSlot = getLocalHourSlot();
+  float hourPulse = hourPulseBlendAmount();
 
   for (int i = 0; i < barW; i++) {
     int slot = (barW == MATRIX_WIDTH) ? (i * COLOR_BAR_SLOTS / MATRIX_WIDTH) : i;
     if (slot >= COLOR_BAR_SLOTS) slot = COLOR_BAR_SLOTS - 1;
     int px = offsetX + barX + i;
     if (px >= 0 && px < MATRIX_WIDTH) {
-      matrix.drawPixel(px, COLOR_BAR_ROW, scr.colorBarColors[slot]);
+      uint16_t color = scr.colorBarColors[slot];
+      if (hourSlot >= 0 && slot == hourSlot) {
+        color = blendColorTowardWhite(color, hourPulse);
+      }
+      matrix.drawPixel(px, COLOR_BAR_ROW, color);
     }
   }
 }
@@ -2508,7 +2590,7 @@ void handleScreenEditPage() {
 
   html += "<label>Color Bar JSON Path (optional):</label>";
   html += "<input type='text' name='colorBarPath' value='" + htmlEscape(scrColorBarPath) + "' placeholder='numbers'>";
-  html += "<p class='help'>Path to a JSON array of exactly 24 items (HEX color with or without #, or null for gray). Leave empty to hide the bottom color bar.</p>";
+  html += "<p class='help'>Path to a JSON array of exactly 24 items (HEX color with or without #, or null for gray). Slot 0 = midnight hour, slot 23 = 23:00. The current hour segment pulses slowly toward white when NTP time is available. Leave empty to hide the bar.</p>";
 
   html += "<label>Polling Interval (seconds):</label>";
   html += "<input type='number' name='interval' value='" + String(scrInterval) + "' min='5' max='3600' required>";

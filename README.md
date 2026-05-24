@@ -38,9 +38,13 @@ This firmware transforms your Ulanzi TC001 into a self-contained API monitoring 
 **Why This Over AWTRIX?**
 AWTRIX requires an external server to POST data to the device. This firmware polls APIs directly from the device, making it ideal for portable use on public WiFi networks where you can't run external servers.
 
+## What's New in v1.1.5
+
+- **Current-hour pulse on color bar** - When a screen has a 24-slot color bar enabled, the segment for the current local hour (0–23, slot 0 = midnight) slowly pulses toward white using a sine wave (~3.5 s period). Requires WiFi and NTP sync (Europe/Warsaw timezone by default).
+
 ## What's New in v1.1.4
 
-- **Per-screen color bar** - Optional bottom row (y=7): 24 px beside an 8×8 icon, or 32 px full width without icon. JSON array of exactly 24 HEX colors (`#` optional) or `null` (gray). Configure **Color Bar JSON Path** on each screen (e.g. `numbers`). Empty path = no bar.
+- **Per-screen color bar** - Optional bottom row (y=7): 24 px beside an 8×8 icon, or 32 px full width without icon. JSON array of exactly 24 HEX colors (`#` optional) or `null` (gray). Configure **Color Bar JSON Path** on each screen (e.g. `numbers`). Empty path = no bar. Treat slot index as hour of day when using hour pulse.
 
 ## What's New in v1.1.3
 
