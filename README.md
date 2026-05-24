@@ -333,6 +333,8 @@ Navigate to your TC001's IP address (displayed on the LED matrix) to access the 
 | **Polling Interval** | Seconds between API calls | `60` (range: 5-3600) |
 | **Auto Brightness** | Checkbox for automatic brightness control | Checked = use light sensor, Unchecked = manual |
 | **Manual Brightness** | Slider for brightness level (when auto disabled) | `40` (range: 1-255) |
+| **Animate Screen Changes** | 1s horizontal slide when switching screens (ease-out-expo) | Off by default; Btn1 = slide left, Btn3 = slide right |
+| **Auto-Rotate Screens** | Cycle through screens automatically | Optional interval 3-300 seconds |
 
 **Note about URL encoding:** You can paste API URLs directly from your API documentation. Special characters in query parameters (like spaces, quotes, etc.) are automatically URL-encoded when the request is sent. For example, `filter=Name eq 'John'` is automatically encoded to `filter=Name%20eq%20%27John%27`.
 
@@ -651,7 +653,8 @@ Backup files are stored in JSON format and can be viewed/edited in any text edit
   "text_color": [255, 136, 0],
   "text_color_json_path": "data.color",
   "auto_brightness": true,
-  "manual_brightness": 40
+  "manual_brightness": 40,
+  "screen_transition_anim": false
 }
 ```
 
@@ -688,8 +691,8 @@ The API can return any valid JSON structure. Use the JSON path configuration to 
 | Action | Result |
 |--------|--------|
 | **Hold Button 1 during startup** | Enter WiFi configuration mode |
-| **Short press Button 1** | Switch to previous screen |
-| **Short press Button 3** | Switch to next screen |
+| **Short press Button 1** | Switch to previous screen (with optional 1s slide animation left if enabled in General Settings) |
+| **Short press Button 3** | Switch to next screen (with optional 1s slide animation right if enabled) |
 | **Hold Button 2 for 1 second** | Force immediate API refresh on active screen |
 | **Hold Button 2 + Button 3 for 0.5s** | Show battery status on display (3 seconds) |
 | **Hold all 3 buttons for 3 seconds** | Factory reset (WiFi + all settings) |
