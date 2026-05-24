@@ -8,10 +8,11 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
+#include <time.h>
 #include "TomThumb.h"
 
 // Project Details
-String buildNumber = "v1.1.3";
+String buildNumber = "v1.1.5";
 
 // Pin definitions
 #define BUTTON_1 26
@@ -27,6 +28,10 @@ String buildNumber = "v1.1.3";
 #define MATRIX_HEIGHT 8
 #define ICON_WIDTH 8
 #define TEXT_WIDTH 24
+#define COLOR_BAR_SLOTS 24
+#define COLOR_BAR_ROW (MATRIX_HEIGHT - 1)
+#define HOUR_PULSE_PERIOD_MS 3500
+#define NTP_RESYNC_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
 
 // Screen configuration
 #define MAX_SCREENS 5
@@ -74,8 +79,12 @@ struct Screen {
   uint8_t textColorB;
   String textColorJsonPath;
   uint8_t textHeightMode;     // 5 = compact TomThumb (default), 7 = standard GFX
+  String colorBarJsonPath;    // optional JSON path to 24-element color array
   // Runtime (not persisted)
   bool iconEnabled;
+  bool colorBarEnabled;
+  bool colorBarValid;
+  uint16_t colorBarColors[COLOR_BAR_SLOTS];
   uint16_t iconPixels[64];
   uint16_t currentTextColor;
   String currentValue;
@@ -91,6 +100,8 @@ bool autoRotate = false;
 int rotateInterval = 10; // seconds between auto-rotation
 unsigned long lastRotateTime = 0;
 bool screenTransitionAnim = false;
+bool timeSynced = false;
+unsigned long lastNtpSyncMs = 0;
 
 // Screen transition animation state
 bool transitionActive = false;
@@ -108,6 +119,15 @@ uint8_t screenTextHeight(int screenIndex);
 void prepareMatrixTextFor(uint8_t heightMode);
 int16_t matrixTextBaselineYFor(uint8_t heightMode);
 uint16_t measureTextWidthFor(const String& text, uint8_t heightMode);
+bool navigateJsonPath(JsonVariant root, const String& path, JsonVariant& out);
+void initScreenColorBarState(Screen& scr);
+bool updateScreenColorBar(Screen& scr, const String& jsonPayload);
+void drawColorBar(const Screen& scr, int16_t offsetX);
+void applyPolandTimezone();
+void syncDeviceTime();
+int getLocalHourSlot();
+uint16_t blendColorTowardWhite(uint16_t color, float amount);
+float hourPulseBlendAmount();
 
 // Brightness configuration
 bool autoBrightness = false; // false = manual, true = auto (light sensor)
@@ -266,6 +286,9 @@ void setup() {
   Serial.println("Web server started");
   
   displayScrollText("READY", matrix.Color(0, 255, 255));
+
+  syncDeviceTime();
+  lastNtpSyncMs = millis();
   
   // Poll active screen immediately if configured
   if (numScreens > 0 && screens[activeScreen].apiConfigured) {
@@ -322,6 +345,20 @@ void loop() {
     if (screens[i].apiConfigured && (millis() - screens[i].lastAPICall > (unsigned long)(screens[i].pollingInterval * 1000))) {
       pollScreenAPI(i);
       screens[i].lastAPICall = millis();
+    }
+  }
+
+  if (!timeSynced || (millis() - lastNtpSyncMs > NTP_RESYNC_INTERVAL_MS)) {
+    bool anyColorBar = false;
+    for (int i = 0; i < numScreens; i++) {
+      if (screens[i].colorBarJsonPath.length() > 0) {
+        anyColorBar = true;
+        break;
+      }
+    }
+    if (anyColorBar && WiFi.status() == WL_CONNECTED) {
+      syncDeviceTime();
+      lastNtpSyncMs = millis();
     }
   }
 
@@ -517,7 +554,9 @@ void loadConfiguration() {
       screens[0].textColorG = 255;
       screens[0].textColorB = 0;
       screens[0].textColorJsonPath = "";
+      screens[0].colorBarJsonPath = "";
       screens[0].textHeightMode = 5;
+      initScreenColorBarState(screens[0]);
       numScreens = 1;
       activeScreen = 0;
 
@@ -569,6 +608,8 @@ void loadConfiguration() {
     screens[i].textColorG = preferences.getUChar(("s" + idx + "cg").c_str(), 255);
     screens[i].textColorB = preferences.getUChar(("s" + idx + "cb").c_str(), 0);
     screens[i].textColorJsonPath = preferences.getString(("s" + idx + "cpath").c_str(), "");
+    screens[i].colorBarJsonPath = preferences.getString(("s" + idx + "barpath").c_str(), "");
+    initScreenColorBarState(screens[i]);
     String thKey = "s" + idx + "thgt";
     if (preferences.isKey(thKey.c_str())) {
       screens[i].textHeightMode = normalizeTextHeight(preferences.getInt(thKey.c_str(), 5));
@@ -636,6 +677,7 @@ void saveScreenToPrefs(int index) {
   preferences.putUChar(("s" + idx + "cb").c_str(), screens[index].textColorB);
   preferences.putString(("s" + idx + "cpath").c_str(), screens[index].textColorJsonPath);
   preferences.putInt(("s" + idx + "thgt").c_str(), screens[index].textHeightMode);
+  preferences.putString(("s" + idx + "barpath").c_str(), screens[index].colorBarJsonPath);
 }
 
 void removeScreenFromPrefs(int index) {
@@ -658,6 +700,7 @@ void removeScreenFromPrefs(int index) {
   preferences.remove(("s" + idx + "cb").c_str());
   preferences.remove(("s" + idx + "cpath").c_str());
   preferences.remove(("s" + idx + "thgt").c_str());
+  preferences.remove(("s" + idx + "barpath").c_str());
 }
 
 void saveAllConfiguration() {
@@ -1064,6 +1107,7 @@ void pollScreenAPI(int index) {
               scr.currentTextColor = matrix.Color(cr, cg, cb);
             }
           }
+          updateScreenColorBar(scr, payload);
           Serial.println("[Screen " + String(index) + "] Value: " + scr.currentValue);
           if (index == activeScreen) {
             scrollX = MATRIX_WIDTH;
@@ -1072,6 +1116,7 @@ void pollScreenAPI(int index) {
         } else {
           scr.currentValue = "PATH ERROR";
           scr.lastError = "Could not extract value from JSON path";
+          updateScreenColorBar(scr, payload);
           success = true;
         }
       } else {
@@ -1098,47 +1143,38 @@ void pollScreenAPI(int index) {
   }
 }
 
-String extractJSONValue(const String& json, const String& path) {
-  DynamicJsonDocument doc(4096);
-  DeserializationError error = deserializeJson(doc, json);
-  
-  if (error) {
-    Serial.print("JSON parse error: ");
-    Serial.println(error.c_str());
-    return "";
-  }
-  
-  JsonVariant current = doc.as<JsonVariant>();
+bool navigateJsonPath(JsonVariant root, const String& path, JsonVariant& out) {
+  JsonVariant current = root;
   String workingPath = path;
-  
+
   while (workingPath.length() > 0) {
     int dotPos = workingPath.indexOf('.');
     int bracketPos = workingPath.indexOf('[');
-    
+
     String segment;
     if (bracketPos >= 0 && (dotPos < 0 || bracketPos < dotPos)) {
       segment = workingPath.substring(0, bracketPos);
       if (segment.length() > 0 && current.is<JsonObject>()) {
         current = current[segment];
       }
-      
+
       int closeBracket = workingPath.indexOf(']');
       if (closeBracket < 0) {
         Serial.println("Malformed path: missing ]");
-        return "";
+        return false;
       }
-      
+
       String arrayPart = workingPath.substring(bracketPos + 1, closeBracket);
-      
+
       if (arrayPart.indexOf('=') > 0) {
         int eqPos = arrayPart.indexOf('=');
         String filterField = arrayPart.substring(0, eqPos);
         String filterValue = arrayPart.substring(eqPos + 1);
-        
+
         if (current.is<JsonArray>()) {
           JsonArray arr = current.as<JsonArray>();
           bool found = false;
-          
+
           for (JsonVariant item : arr) {
             if (item.is<JsonObject>()) {
               JsonVariant fieldValue = item[filterField];
@@ -1157,10 +1193,10 @@ String extractJSONValue(const String& json, const String& path) {
               }
             }
           }
-          
+
           if (!found) {
             Serial.println("No matching item found in array");
-            return "";
+            return false;
           }
         }
       } else {
@@ -1171,11 +1207,11 @@ String extractJSONValue(const String& json, const String& path) {
             current = arr[index];
           } else {
             Serial.println("Array index out of bounds");
-            return "";
+            return false;
           }
         }
       }
-      
+
       workingPath = workingPath.substring(closeBracket + 1);
       if (workingPath.startsWith(".")) {
         workingPath = workingPath.substring(1);
@@ -1183,23 +1219,42 @@ String extractJSONValue(const String& json, const String& path) {
     } else if (dotPos >= 0) {
       segment = workingPath.substring(0, dotPos);
       workingPath = workingPath.substring(dotPos + 1);
-      
+
       if (current.is<JsonObject>()) {
         current = current[segment];
       } else {
         Serial.println("Expected object at segment: " + segment);
-        return "";
+        return false;
       }
     } else {
       segment = workingPath;
       workingPath = "";
-      
+
       if (current.is<JsonObject>()) {
         current = current[segment];
       }
     }
   }
-  
+
+  out = current;
+  return true;
+}
+
+String extractJSONValue(const String& json, const String& path) {
+  DynamicJsonDocument doc(4096);
+  DeserializationError error = deserializeJson(doc, json);
+
+  if (error) {
+    Serial.print("JSON parse error: ");
+    Serial.println(error.c_str());
+    return "";
+  }
+
+  JsonVariant current;
+  if (!navigateJsonPath(doc.as<JsonVariant>(), path, current)) {
+    return "";
+  }
+
   if (current.is<const char*>()) {
     return String(current.as<const char*>());
   } else if (current.is<int>()) {
@@ -1209,9 +1264,162 @@ String extractJSONValue(const String& json, const String& path) {
   } else if (current.is<bool>()) {
     return current.as<bool>() ? "true" : "false";
   }
-  
+
   Serial.println("Value is not a primitive type");
   return "";
+}
+
+uint16_t colorBarGrayPixel() {
+  return matrix.Color(48, 48, 48);
+}
+
+void applyPolandTimezone() {
+  // Must run after configTime() — ESP32 configTime(0,0) overwrites TZ with UTC otherwise.
+  setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+  tzset();
+}
+
+void syncDeviceTime() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 15000)) {
+    timeSynced = false;
+    Serial.println("NTP time sync failed (no response)");
+    return;
+  }
+
+  applyPolandTimezone();
+
+  if (!getLocalTime(&timeinfo, 5000)) {
+    timeSynced = false;
+    Serial.println("NTP time sync failed (local time after TZ)");
+    return;
+  }
+
+  timeSynced = true;
+  char timeBuf[32];
+  strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  Serial.print("NTP time synced (local): ");
+  Serial.print(timeBuf);
+  Serial.print(" hour=");
+  Serial.print(timeinfo.tm_hour);
+  Serial.print(" DST=");
+  Serial.println(timeinfo.tm_isdst);
+}
+
+int getLocalHourSlot() {
+  if (!timeSynced) return -1;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return -1;
+  return timeinfo.tm_hour;
+}
+
+float hourPulseBlendAmount() {
+  float phase = (millis() % HOUR_PULSE_PERIOD_MS) / (float)HOUR_PULSE_PERIOD_MS * 2.0f * PI;
+  return (sinf(phase) + 1.0f) * 0.5f;
+}
+
+uint16_t blendColorTowardWhite(uint16_t color, float amount) {
+  if (amount <= 0.0f) return color;
+  if (amount >= 1.0f) return matrix.Color(255, 255, 255);
+
+  uint8_t r = ((color >> 11) & 0x1F) << 3;
+  uint8_t g = ((color >> 5) & 0x3F) << 2;
+  uint8_t b = (color & 0x1F) << 3;
+  r = r + (uint8_t)((255 - r) * amount);
+  g = g + (uint8_t)((255 - g) * amount);
+  b = b + (uint8_t)((255 - b) * amount);
+  return matrix.Color(r, g, b);
+}
+
+void initScreenColorBarState(Screen& scr) {
+  scr.colorBarEnabled = scr.colorBarJsonPath.length() > 0;
+  scr.colorBarValid = false;
+  uint16_t gray = colorBarGrayPixel();
+  for (int i = 0; i < COLOR_BAR_SLOTS; i++) {
+    scr.colorBarColors[i] = gray;
+  }
+}
+
+bool updateScreenColorBar(Screen& scr, const String& jsonPayload) {
+  if (scr.colorBarJsonPath.length() == 0) {
+    scr.colorBarEnabled = false;
+    return false;
+  }
+
+  scr.colorBarEnabled = true;
+  uint16_t gray = colorBarGrayPixel();
+  for (int i = 0; i < COLOR_BAR_SLOTS; i++) {
+    scr.colorBarColors[i] = gray;
+  }
+  scr.colorBarValid = false;
+
+  DynamicJsonDocument doc(4096);
+  DeserializationError error = deserializeJson(doc, jsonPayload);
+  if (error) {
+    Serial.print("Color bar JSON parse error: ");
+    Serial.println(error.c_str());
+    return false;
+  }
+
+  JsonVariant node;
+  if (!navigateJsonPath(doc.as<JsonVariant>(), scr.colorBarJsonPath, node) || !node.is<JsonArray>()) {
+    Serial.println("Color bar path is not an array");
+    return false;
+  }
+
+  JsonArray arr = node.as<JsonArray>();
+  if (arr.size() != COLOR_BAR_SLOTS) {
+    Serial.print("Color bar array must have ");
+    Serial.print(COLOR_BAR_SLOTS);
+    Serial.print(" elements, got ");
+    Serial.println(arr.size());
+    return false;
+  }
+
+  for (int i = 0; i < COLOR_BAR_SLOTS; i++) {
+    JsonVariant el = arr[i];
+    if (el.isNull()) {
+      scr.colorBarColors[i] = gray;
+    } else if (el.is<const char*>()) {
+      uint8_t cr, cg, cb;
+      if (parseHexColor(String(el.as<const char*>()), cr, cg, cb)) {
+        scr.colorBarColors[i] = matrix.Color(cr, cg, cb);
+      } else {
+        scr.colorBarColors[i] = gray;
+      }
+    } else {
+      scr.colorBarColors[i] = gray;
+    }
+  }
+
+  scr.colorBarValid = true;
+  return true;
+}
+
+void drawColorBar(const Screen& scr, int16_t offsetX) {
+  if (!scr.colorBarEnabled) return;
+
+  int barX = scr.iconEnabled ? ICON_WIDTH : 0;
+  int barW = scr.iconEnabled ? COLOR_BAR_SLOTS : MATRIX_WIDTH;
+  int hourSlot = getLocalHourSlot();
+  float hourPulse = hourPulseBlendAmount();
+
+  for (int i = 0; i < barW; i++) {
+    int slot = (barW == MATRIX_WIDTH) ? (i * COLOR_BAR_SLOTS / MATRIX_WIDTH) : i;
+    if (slot >= COLOR_BAR_SLOTS) slot = COLOR_BAR_SLOTS - 1;
+    int px = offsetX + barX + i;
+    if (px >= 0 && px < MATRIX_WIDTH) {
+      uint16_t color = scr.colorBarColors[slot];
+      if (hourSlot >= 0 && slot == hourSlot) {
+        color = blendColorTowardWhite(color, hourPulse);
+      }
+      matrix.drawPixel(px, COLOR_BAR_ROW, color);
+    }
+  }
 }
 
 String textAlignFromBackup(JsonVariantConst textAlignKey, JsonVariantConst scrollEnabledKey) {
@@ -1329,6 +1537,7 @@ void drawScreenAt(int screenIndex, int16_t offsetX) {
 
   matrix.setCursor(textX, textY);
   matrix.print(scr.currentValue);
+  drawColorBar(scr, offsetX);
 }
 
 void updateScreenTransition() {
@@ -1410,6 +1619,7 @@ void scrollCurrentValue() {
 
     matrix.setCursor(scrollX + iconOffset, textY);
     matrix.print(scr.currentValue);
+    drawColorBar(scr, 0);
     matrix.show();
 
     scrollX--;
@@ -1770,6 +1980,7 @@ void handleBackupDownload() {
     textColor.add(screens[i].textColorB);
     s["text_color_json_path"] = screens[i].textColorJsonPath;
     s["text_height"] = screens[i].textHeightMode;
+    s["color_bar_json_path"] = screens[i].colorBarJsonPath;
   }
 
   String output;
@@ -1848,8 +2059,13 @@ void handleBackupRestore() {
       } else {
         screens[i].textHeightMode = 5;
       }
+      screens[i].colorBarJsonPath = s["color_bar_json_path"] | "";
+      initScreenColorBarState(screens[i]);
       screens[i].currentTextColor = matrix.Color(0, 255, 0);
       screens[i].apiConfigured = (screens[i].apiEndpoint.length() > 0 && screens[i].jsonPath.length() > 0);
+      if (screens[i].iconData.length() > 0) {
+        parseIconData(screens[i].iconData, screens[i].iconPixels, screens[i].iconEnabled);
+      }
     }
   } else if (doc.containsKey("api_endpoint")) {
     // Legacy single-screen backup format
@@ -1883,8 +2099,13 @@ void handleBackupRestore() {
     } else {
       screens[0].textHeightMode = 5;
     }
+    screens[0].colorBarJsonPath = doc["color_bar_json_path"] | "";
+    initScreenColorBarState(screens[0]);
     screens[0].currentTextColor = matrix.Color(0, 255, 0);
     screens[0].apiConfigured = (screens[0].apiEndpoint.length() > 0 && screens[0].jsonPath.length() > 0);
+    if (screens[0].iconData.length() > 0) {
+      parseIconData(screens[0].iconData, screens[0].iconPixels, screens[0].iconEnabled);
+    }
   }
 
   // Save everything
@@ -2212,7 +2433,7 @@ void handleScreensPage() {
       String truncUrl = screens[i].apiEndpoint;
       if (truncUrl.length() > 50) truncUrl = truncUrl.substring(0, 50) + "...";
       html += "<div class='screen-detail'>Endpoint: " + htmlEscape(truncUrl) + "</div>";
-      html += "<div class='screen-detail'>Path: " + htmlEscape(screens[i].jsonPath) + " | Interval: " + String(screens[i].pollingInterval) + "s | Text: " + String(screens[i].textHeightMode == 7 ? "Standard" : "Compact") + "</div>";
+      html += "<div class='screen-detail'>Path: " + htmlEscape(screens[i].jsonPath) + " | Interval: " + String(screens[i].pollingInterval) + "s | Text: " + String(screens[i].textHeightMode == 7 ? "Standard" : "Compact") + " | Bar: " + String(screens[i].colorBarJsonPath.length() > 0 ? "On" : "Off") + "</div>";
     } else {
       html += "<div class='screen-detail' style='color:#f44336;'>Not configured (missing endpoint or JSON path)</div>";
     }
@@ -2267,6 +2488,7 @@ void handleScreenEditPage() {
   uint8_t scrTextColorB = 0;
   String scrTextColorPath = "";
   uint8_t scrTextHeight = 5;
+  String scrColorBarPath = "";
 
   if (server.hasArg("id")) {
     screenIdx = server.arg("id").toInt();
@@ -2289,6 +2511,7 @@ void handleScreenEditPage() {
       scrTextColorB = scr.textColorB;
       scrTextColorPath = scr.textColorJsonPath;
       scrTextHeight = scr.textHeightMode;
+      scrColorBarPath = scr.colorBarJsonPath;
     } else {
       screenIdx = -1;
     }
@@ -2377,6 +2600,10 @@ void handleScreenEditPage() {
   html += "<label><input type='radio' name='textHeight' value='5' " + String(scrTextHeight != 7 ? "checked" : "") + "><span class='checkbox-label'>Compact (TomThumb 3x5 px)</span></label><br>";
   html += "<label><input type='radio' name='textHeight' value='7' " + String(scrTextHeight == 7 ? "checked" : "") + "><span class='checkbox-label'>Standard (7 px)</span></label>";
   html += "<p class='help'>Compact uses a smaller font with 1 px empty row at the top of the matrix.</p>";
+
+  html += "<label>Color Bar JSON Path (optional):</label>";
+  html += "<input type='text' name='colorBarPath' value='" + htmlEscape(scrColorBarPath) + "' placeholder='numbers'>";
+  html += "<p class='help'>Path to a JSON array of exactly 24 items (HEX color with or without #, or null for gray). Slot 0 = midnight hour, slot 23 = 23:00. The current hour segment pulses slowly toward white when NTP time is available. Leave empty to hide the bar.</p>";
 
   html += "<label>Polling Interval (seconds):</label>";
   html += "<input type='number' name='interval' value='" + String(scrInterval) + "' min='5' max='3600' required>";
@@ -2520,6 +2747,8 @@ void handleScreenSave() {
     scr.textColorJsonPath = "";
     scr.textAlign = "scroll";
     scr.textHeightMode = 5;
+    scr.colorBarJsonPath = "";
+    initScreenColorBarState(scr);
   }
   scr.name = server.arg("name");
   scr.apiEndpoint = server.arg("apiUrl");
@@ -2544,6 +2773,9 @@ void handleScreenSave() {
   } else if (isNew) {
     scr.textHeightMode = 5;
   }
+  scr.colorBarJsonPath = server.arg("colorBarPath");
+  scr.colorBarJsonPath.trim();
+  initScreenColorBarState(scr);
   scr.iconData = server.arg("iconData");
 
   String colorMode = server.arg("textColorMode");
@@ -2754,6 +2986,14 @@ void handleTestAPI() {
           response += "\nError: Could not extract color from JSON path: " + scr.textColorJsonPath;
         }
       }
+
+      if (scr.colorBarJsonPath.length() > 0) {
+        if (updateScreenColorBar(scr, payload)) {
+          response += "\nColor bar: 24/24 OK";
+        } else {
+          response += "\nColor bar: invalid (expected JSON array of exactly 24 HEX strings or null)";
+        }
+      }
     } else {
       response += "Error: " + http.getString();
     }
@@ -2828,6 +3068,8 @@ void handleStatus() {
     s["name"] = screens[i].name;
     s["api_configured"] = screens[i].apiConfigured;
     s["text_height"] = screens[i].textHeightMode;
+    s["color_bar_enabled"] = screens[i].colorBarEnabled;
+    s["color_bar_valid"] = screens[i].colorBarValid;
     s["current_value"] = screens[i].currentValue;
     s["last_error"] = screens[i].lastError;
     s["icon_enabled"] = screens[i].iconEnabled;
