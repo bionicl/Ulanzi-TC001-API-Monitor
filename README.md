@@ -38,6 +38,10 @@ This firmware transforms your Ulanzi TC001 into a self-contained API monitoring 
 **Why This Over AWTRIX?**
 AWTRIX requires an external server to POST data to the device. This firmware polls APIs directly from the device, making it ideal for portable use on public WiFi networks where you can't run external servers.
 
+## What's New in v1.1.4
+
+- **Per-screen color bar** - Optional bottom row (y=7): 24 px beside an 8×8 icon, or 32 px full width without icon. JSON array of exactly 24 HEX colors (`#` optional) or `null` (gray). Configure **Color Bar JSON Path** on each screen (e.g. `numbers`). Empty path = no bar.
+
 ## What's New in v1.1.3
 
 - **Per-screen text size** - Compact (TomThumb 3×5, default) or Standard (7 px) is configured per screen on **Edit Screen**, not in General Settings. New screens default to Compact.
@@ -156,6 +160,7 @@ AWTRIX requires an external server to POST data to the device. This firmware pol
 - 🏷️ Optional display prefix and suffix per screen
 - 🎯 Text alignment: scroll, left, center, or right
 - 📐 Per-screen text size: Compact TomThumb 3×5 px (default) or Standard 7 px
+- 🌈 Optional bottom color bar (24-value JSON array per screen)
 - ⚡ Immediate API polling on startup (no waiting for first interval)
 
 #### Brightness Control
