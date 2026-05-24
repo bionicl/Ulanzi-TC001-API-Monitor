@@ -64,7 +64,7 @@ struct Screen {
   String displayPrefix;
   String displaySuffix;
   int pollingInterval;
-  bool scrollEnabled;
+  String textAlign;  // "scroll", "left", "center", "right"
   String iconData;
   String textColorMode;       // "default", "static", or "api"
   uint8_t textColorR;
@@ -411,9 +411,8 @@ void scrollBatteryDisplay() {
   matrix.fillScreen(0);
   matrix.setTextColor(color);
   
-  bool useScroll = (numScreens > 0) ? screens[activeScreen].scrollEnabled : true;
-  if (useScroll) {
-    // Scrolling mode
+  String align = (numScreens > 0) ? screens[activeScreen].textAlign : "scroll";
+  if (align == "scroll") {
     int16_t textWidth = batteryText.length() * 6;
 
     matrix.setCursor(scrollX, 0);
@@ -425,13 +424,21 @@ void scrollBatteryDisplay() {
       scrollX = MATRIX_WIDTH;
     }
   } else {
-    // Static mode - center the text
     int16_t x1, y1;
     uint16_t w, h;
     matrix.getTextBounds(batteryText.c_str(), 0, 0, &x1, &y1, &w, &h);
-    int16_t centerX = (MATRIX_WIDTH - w) / 2;
+    int16_t textX;
+    if (align == "left") {
+      textX = 0;
+    } else if (align == "right") {
+      textX = MATRIX_WIDTH - w;
+      if (textX < 0) textX = 0;
+    } else {
+      textX = (MATRIX_WIDTH - w) / 2;
+      if (textX < 0) textX = 0;
+    }
 
-    matrix.setCursor(centerX, 0);
+    matrix.setCursor(textX, 0);
     matrix.print(batteryText);
     matrix.show();
   }
@@ -474,7 +481,8 @@ void loadConfiguration() {
       screens[0].displayPrefix = preferences.getString("prefix", "");
       screens[0].displaySuffix = preferences.getString("suffix", "");
       screens[0].pollingInterval = preferences.getInt("interval", 60);
-      screens[0].scrollEnabled = preferences.getBool("scroll", true);
+      bool legacyScroll = preferences.getBool("scroll", true);
+      screens[0].textAlign = legacyScroll ? "scroll" : "center";
       screens[0].iconData = preferences.getString("iconData", "");
       screens[0].textColorMode = "default";
       screens[0].textColorR = 0;
@@ -515,7 +523,17 @@ void loadConfiguration() {
     screens[i].displayPrefix = preferences.getString(("s" + idx + "pfx").c_str(), "");
     screens[i].displaySuffix = preferences.getString(("s" + idx + "sfx").c_str(), "");
     screens[i].pollingInterval = preferences.getInt(("s" + idx + "intv").c_str(), 60);
-    screens[i].scrollEnabled = preferences.getBool(("s" + idx + "scrl").c_str(), true);
+    String alignKey = "s" + idx + "align";
+    if (preferences.isKey(alignKey.c_str())) {
+      screens[i].textAlign = preferences.getString(alignKey.c_str(), "scroll");
+    } else {
+      bool oldScroll = preferences.getBool(("s" + idx + "scrl").c_str(), true);
+      screens[i].textAlign = oldScroll ? "scroll" : "center";
+    }
+    if (screens[i].textAlign != "scroll" && screens[i].textAlign != "left" &&
+        screens[i].textAlign != "center" && screens[i].textAlign != "right") {
+      screens[i].textAlign = "scroll";
+    }
     screens[i].iconData = preferences.getString(("s" + idx + "icon").c_str(), "");
     screens[i].textColorMode = preferences.getString(("s" + idx + "tclr").c_str(), "default");
     screens[i].textColorR = preferences.getUChar(("s" + idx + "cr").c_str(), 0);
@@ -572,7 +590,8 @@ void saveScreenToPrefs(int index) {
   preferences.putString(("s" + idx + "pfx").c_str(), screens[index].displayPrefix);
   preferences.putString(("s" + idx + "sfx").c_str(), screens[index].displaySuffix);
   preferences.putInt(("s" + idx + "intv").c_str(), screens[index].pollingInterval);
-  preferences.putBool(("s" + idx + "scrl").c_str(), screens[index].scrollEnabled);
+  preferences.putString(("s" + idx + "align").c_str(), screens[index].textAlign);
+  preferences.remove(("s" + idx + "scrl").c_str());
   preferences.putString(("s" + idx + "icon").c_str(), screens[index].iconData);
   preferences.putString(("s" + idx + "tclr").c_str(), screens[index].textColorMode);
   preferences.putUChar(("s" + idx + "cr").c_str(), screens[index].textColorR);
@@ -592,6 +611,7 @@ void removeScreenFromPrefs(int index) {
   preferences.remove(("s" + idx + "pfx").c_str());
   preferences.remove(("s" + idx + "sfx").c_str());
   preferences.remove(("s" + idx + "intv").c_str());
+  preferences.remove(("s" + idx + "align").c_str());
   preferences.remove(("s" + idx + "scrl").c_str());
   preferences.remove(("s" + idx + "icon").c_str());
   preferences.remove(("s" + idx + "tclr").c_str());
@@ -1116,6 +1136,32 @@ String extractJSONValue(const String& json, const String& path) {
   return "";
 }
 
+String textAlignFromBackup(JsonVariantConst textAlignKey, JsonVariantConst scrollEnabledKey) {
+  if (!textAlignKey.isNull()) {
+    String align = textAlignKey.as<String>();
+    if (align == "scroll" || align == "left" || align == "center" || align == "right") {
+      return align;
+    }
+    return "scroll";
+  }
+  bool oldScroll = scrollEnabledKey | true;
+  return oldScroll ? "scroll" : "center";
+}
+
+int16_t staticTextXForAlign(const String& textAlign, int xOffset, int displayWidth, uint16_t w) {
+  int16_t textX;
+  if (textAlign == "left") {
+    textX = xOffset;
+  } else if (textAlign == "right") {
+    textX = xOffset + displayWidth - w;
+    if (textX < xOffset) textX = xOffset;
+  } else {
+    textX = xOffset + (displayWidth - w) / 2;
+    if (textX < xOffset) textX = xOffset;
+  }
+  return textX;
+}
+
 void scrollCurrentValue() {
   matrix.fillScreen(0);
 
@@ -1158,7 +1204,7 @@ void scrollCurrentValue() {
   }
   matrix.setTextColor(color);
 
-  if (scr.scrollEnabled) {
+  if (scr.textAlign == "scroll") {
     int iconOffset = scr.iconEnabled ? (ICON_WIDTH + 1) : 0;
     int16_t textWidth = scr.currentValue.length() * 6;
 
@@ -1196,10 +1242,9 @@ void scrollCurrentValue() {
     uint16_t w, h;
     matrix.getTextBounds(scr.currentValue.c_str(), 0, 0, &x1, &y1, &w, &h);
 
-    int16_t centerX = xOffset + (displayWidth - w) / 2;
-    if (centerX < xOffset) centerX = xOffset;
+    int16_t textX = staticTextXForAlign(scr.textAlign, xOffset, displayWidth, w);
 
-    matrix.setCursor(centerX, 0);
+    matrix.setCursor(textX, 0);
     matrix.print(scr.currentValue);
     matrix.show();
   }
@@ -1543,7 +1588,7 @@ void handleBackupDownload() {
     s["display_prefix"] = screens[i].displayPrefix;
     s["display_suffix"] = screens[i].displaySuffix;
     s["polling_interval"] = screens[i].pollingInterval;
-    s["scroll_enabled"] = screens[i].scrollEnabled;
+    s["text_align"] = screens[i].textAlign;
     s["icon_data"] = screens[i].iconData;
     s["text_color_mode"] = screens[i].textColorMode;
     JsonArray textColor = s.createNestedArray("text_color");
@@ -1603,7 +1648,7 @@ void handleBackupRestore() {
       screens[i].displayPrefix = s["display_prefix"] | "";
       screens[i].displaySuffix = s["display_suffix"] | "";
       screens[i].pollingInterval = s["polling_interval"] | 60;
-      screens[i].scrollEnabled = s["scroll_enabled"] | true;
+      screens[i].textAlign = textAlignFromBackup(s["text_align"], s["scroll_enabled"]);
       screens[i].iconData = s["icon_data"] | "";
       screens[i].textColorMode = s["text_color_mode"] | "default";
       if (s.containsKey("text_color") && s["text_color"].is<JsonArray>()) {
@@ -1633,7 +1678,7 @@ void handleBackupRestore() {
     screens[0].displayPrefix = doc["display_prefix"] | "";
     screens[0].displaySuffix = doc["display_suffix"] | "";
     screens[0].pollingInterval = doc["polling_interval"] | 60;
-    screens[0].scrollEnabled = doc["scroll_enabled"] | true;
+    screens[0].textAlign = textAlignFromBackup(doc["text_align"], doc["scroll_enabled"]);
     screens[0].iconData = doc["icon_data"] | "";
     screens[0].textColorMode = doc["text_color_mode"] | "default";
     if (doc.containsKey("text_color") && doc["text_color"].is<JsonArray>()) {
@@ -2016,7 +2061,7 @@ void handleScreenEditPage() {
   String scrPrefix = "";
   String scrSuffix = "";
   int scrInterval = 60;
-  bool scrScroll = true;
+  String scrTextAlign = "scroll";
   String scrIconData = "";
   String scrTextColorMode = "default";
   uint8_t scrTextColorR = 0;
@@ -2037,7 +2082,7 @@ void handleScreenEditPage() {
       scrPrefix = scr.displayPrefix;
       scrSuffix = scr.displaySuffix;
       scrInterval = scr.pollingInterval;
-      scrScroll = scr.scrollEnabled;
+      scrTextAlign = scr.textAlign;
       scrIconData = scr.iconData;
       scrTextColorMode = scr.textColorMode;
       scrTextColorR = scr.textColorR;
@@ -2119,8 +2164,14 @@ void handleScreenEditPage() {
   html += "<p class='help'>JSON array of 64 RGB pixels [r,g,b] for 8x8 icon (optional)</p>";
   html += "<div id='iconPreview' class='icon-preview'></div>";
 
-  html += "<label><input type='checkbox' name='scroll' " + String(scrScroll ? "checked" : "") + "><span class='checkbox-label'>Enable Scrolling</span></label>";
-  html += "<p class='help'>Uncheck for static centered display</p>";
+  html += "<label>Text Alignment:</label>";
+  html += "<select name='textAlign'>";
+  html += "<option value='scroll'" + String(scrTextAlign == "scroll" ? " selected" : "") + ">Scrolling</option>";
+  html += "<option value='left'" + String(scrTextAlign == "left" ? " selected" : "") + ">Left</option>";
+  html += "<option value='center'" + String(scrTextAlign == "center" ? " selected" : "") + ">Center</option>";
+  html += "<option value='right'" + String(scrTextAlign == "right" ? " selected" : "") + ">Right</option>";
+  html += "</select>";
+  html += "<p class='help'>How to position text on the LED matrix (scrolling, or static left/center/right)</p>";
 
   html += "<label>Polling Interval (seconds):</label>";
   html += "<input type='number' name='interval' value='" + String(scrInterval) + "' min='5' max='3600' required>";
@@ -2262,6 +2313,7 @@ void handleScreenSave() {
     scr.textColorG = 255;
     scr.textColorB = 0;
     scr.textColorJsonPath = "";
+    scr.textAlign = "scroll";
   }
   scr.name = server.arg("name");
   scr.apiEndpoint = server.arg("apiUrl");
@@ -2275,7 +2327,12 @@ void handleScreenSave() {
   scr.displayPrefix = server.arg("prefix");
   scr.displaySuffix = server.arg("suffix");
   scr.pollingInterval = server.arg("interval").toInt();
-  scr.scrollEnabled = server.hasArg("scroll");
+  String alignArg = server.arg("textAlign");
+  if (alignArg == "left" || alignArg == "center" || alignArg == "right") {
+    scr.textAlign = alignArg;
+  } else {
+    scr.textAlign = "scroll";
+  }
   scr.iconData = server.arg("iconData");
 
   String colorMode = server.arg("textColorMode");
